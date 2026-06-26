@@ -1,0 +1,16 @@
+{
+  "profiles": [
+    {
+      "id": "pepe",
+      "display_name": "Pepe",
+      "root_path": "/mnt/music/pepe",
+      "enabled": true
+    },
+    {
+      "id": "manolo",
+      "display_name": "Manolo",
+      "root_path": "/mnt/music/manolo",
+      "enabled": true
+    }
+  ]
+}

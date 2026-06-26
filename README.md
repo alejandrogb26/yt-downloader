@@ -10,7 +10,15 @@
 - MariaDB: base de datos relacional para persistencia.
 - Almacenamiento NFS: destino compartido para los archivos descargados.
 
-En este bloque inicial solo está implementada la base de la API en `backend`. No se incluye Docker, MariaDB, workers, yt-dlp, frontend, Caddy ni systemd.
+En este bloque está implementada la base de la API en `backend` y la exposición de perfiles de biblioteca configurados por JSON. No se incluye Docker, MariaDB, workers, yt-dlp, frontend, Caddy ni systemd.
+
+## Perfiles de biblioteca
+
+Los perfiles definen bibliotecas disponibles para el sistema. Cada perfil tiene un identificador público, un nombre visible y una ruta raíz interna (`root_path`) donde estará la biblioteca.
+
+La API `GET /api/v1/profiles` devuelve solo perfiles habilitados y nunca expone `root_path` al cliente. Las rutas reales son configuración de infraestructura.
+
+Hay un ejemplo versionable en `config/profiles.example.json`. El fichero real `config/profiles.json` está ignorado por Git.
 
 ## Requisitos
 
@@ -44,10 +52,22 @@ Levantar la API en desarrollo:
 uv run --project backend uvicorn yt_downloader_api.main:app --host 127.0.0.1 --port 8080 --reload
 ```
 
+Levantar la API usando el ejemplo de perfiles local, sin modificar `/etc`:
+
+```bash
+PROFILES_CONFIG_PATH="$PWD/config/profiles.example.json" uv run --project backend uvicorn yt_downloader_api.main:app --host 127.0.0.1 --port 8080 --reload
+```
+
 Comprobar health check:
 
 ```bash
 curl http://127.0.0.1:8080/api/v1/health
+```
+
+Comprobar perfiles:
+
+```bash
+curl http://127.0.0.1:8080/api/v1/profiles
 ```
 
 ## Docker
