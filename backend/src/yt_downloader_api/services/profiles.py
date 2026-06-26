@@ -16,6 +16,13 @@ def load_enabled_profiles(config_path: str) -> list[LibraryProfile]:
     return [profile for profile in config.profiles if profile.enabled]
 
 
+def load_enabled_profile(config_path: str, profile_id: str) -> LibraryProfile | None:
+    for profile in load_enabled_profiles(config_path):
+        if profile.id == profile_id:
+            return profile
+    return None
+
+
 def load_profiles_config(config_path: str) -> ProfilesConfig:
     raw_config = read_profiles_config(config_path)
     try:

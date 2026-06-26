@@ -3,13 +3,7 @@
     {
       "id": "pepe",
       "display_name": "Pepe",
-      "root_path": "/mnt/music/pepe",
-      "enabled": true
-    },
-    {
-      "id": "manolo",
-      "display_name": "Manolo",
-      "root_path": "/mnt/music/manolo",
+      "root_path": "/tmp/yt-library/pepe",
       "enabled": true
     }
   ]
