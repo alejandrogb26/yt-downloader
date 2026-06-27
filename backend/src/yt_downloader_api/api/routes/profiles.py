@@ -18,6 +18,7 @@ from yt_downloader_api.services.filesystem import (
     list_directory_entries,
     move_entry,
     rename_entry,
+    trash_entry,
     validate_relative_directory_path,
 )
 from yt_downloader_api.services.profiles import (
@@ -85,6 +86,15 @@ class RenameEntryRequest(BaseModel):
 class MoveEntryRequest(BaseModel):
     source_path: str
     target_directory_path: str = ""
+
+
+class TrashEntryRequest(BaseModel):
+    path: str
+
+
+class TrashEntryResponse(BaseModel):
+    status: str
+    original_path: str
 
 
 @router.get("/profiles", response_model=ProfilesResponse)
@@ -375,4 +385,50 @@ def move_profile_entry(
         path=moved_entry.path,
         type=moved_entry.type,
         size_bytes=moved_entry.size_bytes,
+    )
+
+
+@router.delete("/profiles/{profile_id}/entries", response_model=TrashEntryResponse)
+def trash_profile_entry(
+    profile_id: str,
+    request: TrashEntryRequest,
+) -> TrashEntryResponse:
+    settings = get_settings()
+    try:
+        profile = load_enabled_profile(settings.profiles_config_path, profile_id)
+    except ProfilesConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PROFILES_UNAVAILABLE_MESSAGE,
+        ) from exc
+
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=PROFILE_NOT_FOUND_MESSAGE,
+        )
+
+    try:
+        trashed_entry = trash_entry(profile.root_path, request.path)
+    except InvalidEntryPathError as exc:
+        raise HTTPException(status_code=422, detail=INVALID_ENTRY_PATH_MESSAGE) from exc
+    except EntryNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ENTRY_NOT_FOUND_MESSAGE,
+        ) from exc
+    except RequestedEntryNotAllowedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=REQUESTED_ENTRY_NOT_ALLOWED_MESSAGE,
+        ) from exc
+    except ProfileStorageUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PROFILE_STORAGE_UNAVAILABLE_MESSAGE,
+        ) from exc
+
+    return TrashEntryResponse(
+        status=trashed_entry.status,
+        original_path=trashed_entry.original_path,
     )

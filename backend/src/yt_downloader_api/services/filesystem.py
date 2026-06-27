@@ -1,7 +1,11 @@
 import stat
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from os import W_OK, X_OK, access
 from pathlib import Path, PurePosixPath
+from secrets import token_hex
+
+TRASH_DIRECTORY_NAME = ".trash"
 
 
 class InvalidDirectoryPathError(Exception):
@@ -61,6 +65,12 @@ class CreatedDirectory:
     name: str
     path: str
     type: str = "directory"
+
+
+@dataclass(frozen=True)
+class TrashedEntry:
+    status: str
+    original_path: str
 
 
 def list_directory_entries(
@@ -191,6 +201,29 @@ def move_entry(
     return to_file_system_entry(target, safe_target_directory_path)
 
 
+def trash_entry(root_path: str, relative_path: str) -> TrashedEntry:
+    root = Path(root_path)
+    safe_path = validate_relative_entry_path(relative_path)
+    if is_trash_path(safe_path):
+        raise RequestedEntryNotAllowedError
+
+    ensure_writable_root(root)
+    source = resolve_entry(root, safe_path)
+    trash_directory = ensure_trash_directory(root)
+    target = build_unique_trash_target(trash_directory, source.name)
+
+    try:
+        source.rename(target)
+    except FileNotFoundError as exc:
+        raise EntryNotFoundError from exc
+    except FileExistsError as exc:
+        raise ProfileStorageUnavailableError from exc
+    except OSError as exc:
+        raise ProfileStorageUnavailableError from exc
+
+    return TrashedEntry(status="trashed", original_path=safe_path)
+
+
 def validate_relative_directory_path(relative_path: str) -> str:
     if "\x00" in relative_path or "\\" in relative_path:
         raise InvalidDirectoryPathError
@@ -252,6 +285,26 @@ def ensure_writable_root(root: Path) -> None:
     ensure_available_root(root)
     if not access(root, W_OK | X_OK):
         raise ProfileStorageUnavailableError
+
+
+def ensure_trash_directory(root: Path) -> Path:
+    trash_directory = root / TRASH_DIRECTORY_NAME
+    try:
+        trash_status = trash_directory.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        try:
+            trash_directory.mkdir(mode=0o700)
+        except OSError as exc:
+            raise ProfileStorageUnavailableError from exc
+        return trash_directory
+    except OSError as exc:
+        raise ProfileStorageUnavailableError from exc
+
+    if trash_directory.is_symlink() or not stat.S_ISDIR(trash_status.st_mode):
+        raise ProfileStorageUnavailableError
+    if not access(trash_directory, W_OK | X_OK):
+        raise ProfileStorageUnavailableError
+    return trash_directory
 
 
 def resolve_directory(root: Path, relative_path: str) -> Path:
@@ -372,3 +425,22 @@ def is_self_or_child_path(source_path: str, target_directory_path: str) -> bool:
     return target_directory_path == source_path or target_directory_path.startswith(
         f"{source_path}/"
     )
+
+
+def is_trash_path(relative_path: str) -> bool:
+    return relative_path == TRASH_DIRECTORY_NAME or relative_path.startswith(
+        f"{TRASH_DIRECTORY_NAME}/"
+    )
+
+
+def build_unique_trash_target(trash_directory: Path, original_name: str) -> Path:
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    for _attempt in range(10):
+        target = trash_directory / f"{timestamp}-{token_hex(3)}-{original_name}"
+        try:
+            target.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            return target
+        except OSError as exc:
+            raise ProfileStorageUnavailableError from exc
+    raise ProfileStorageUnavailableError

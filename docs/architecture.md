@@ -5,7 +5,7 @@
 ## Componentes previstos
 
 - Frontend: aplicación web separada para gestionar descargas y consultar estados. No implementado todavía.
-- Backend: API FastAPI con Pydantic v2. Actualmente incluye configuración base, `GET /api/v1/health`, `GET /api/v1/profiles`, navegación con `GET /api/v1/profiles/{profile_id}/entries`, creación de directorios con `POST /api/v1/profiles/{profile_id}/directories`, renombrado con `PATCH /api/v1/profiles/{profile_id}/entries/rename` y movimiento con `POST /api/v1/profiles/{profile_id}/entries/move`.
+- Backend: API FastAPI con Pydantic v2. Actualmente incluye configuración base, `GET /api/v1/health`, `GET /api/v1/profiles`, navegación con `GET /api/v1/profiles/{profile_id}/entries`, creación de directorios con `POST /api/v1/profiles/{profile_id}/directories`, renombrado con `PATCH /api/v1/profiles/{profile_id}/entries/rename`, movimiento con `POST /api/v1/profiles/{profile_id}/entries/move` y envío a papelera con `DELETE /api/v1/profiles/{profile_id}/entries`.
 - Worker de descargas: proceso independiente para ejecutar descargas con yt-dlp. No implementado todavía.
 - MariaDB: base de datos para perfiles, trabajos, estados y metadatos. No implementada todavía.
 - Almacenamiento NFS: ubicación compartida para archivos descargados. No implementado todavía.
@@ -37,7 +37,9 @@ El renombrado de ficheros y directorios se limita al mismo directorio padre. El 
 
 El movimiento de ficheros y directorios se limita a la misma biblioteca del perfil. Conserva el nombre original y solo acepta como destino un directorio existente bajo la raíz configurada del perfil.
 
-El sistema de archivos NFS será la fuente de verdad de las bibliotecas. Todavía no hay eliminación, papelera, descargas con yt-dlp, worker ni persistencia en MariaDB.
+La eliminación actual no borra definitivamente. Mueve la entrada a `.trash` dentro de la raíz del perfil, usando un nombre interno único. La API no devuelve la ubicación interna en papelera y `.trash` no aparece en los listados normales porque las entradas ocultas no se exponen.
+
+El sistema de archivos NFS será la fuente de verdad de las bibliotecas. Todavía no hay borrado definitivo, vaciado de papelera, restauración, descargas con yt-dlp, worker ni persistencia en MariaDB.
 
 ## Estado actual
 
