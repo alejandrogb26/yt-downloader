@@ -3,6 +3,7 @@ from pydantic import BaseModel
 
 from yt_downloader_api.core.config import get_settings
 from yt_downloader_api.services.filesystem import (
+    CannotMoveDirectoryIntoItselfError,
     DirectoryNotFoundError,
     EntryAlreadyExistsError,
     EntryNotFoundError,
@@ -10,10 +11,12 @@ from yt_downloader_api.services.filesystem import (
     InvalidDirectoryPathError,
     InvalidEntryPathError,
     ProfileStorageUnavailableError,
+    RequestedDirectoryNotAllowedError,
     RequestedEntryNotAllowedError,
     RequestedPathNotDirectoryError,
     create_directory,
     list_directory_entries,
+    move_entry,
     rename_entry,
     validate_relative_directory_path,
 )
@@ -34,9 +37,11 @@ INVALID_ENTRY_NAME_MESSAGE = "Invalid entry name."
 DIRECTORY_NOT_FOUND_MESSAGE = "Directory not found."
 ENTRY_NOT_FOUND_MESSAGE = "Entry not found."
 REQUESTED_ENTRY_NOT_ALLOWED_MESSAGE = "Requested entry is not allowed."
+REQUESTED_DIRECTORY_NOT_ALLOWED_MESSAGE = "Requested directory is not allowed."
 REQUESTED_PATH_NOT_DIRECTORY_MESSAGE = "Requested path is not a directory."
 PROFILE_STORAGE_UNAVAILABLE_MESSAGE = "Profile storage is unavailable."
 ENTRY_ALREADY_EXISTS_MESSAGE = "An entry with this name already exists."
+CANNOT_MOVE_DIRECTORY_INTO_ITSELF_MESSAGE = "Cannot move a directory into itself."
 
 
 class PublicProfile(BaseModel):
@@ -75,6 +80,11 @@ class CreatedDirectoryResponse(BaseModel):
 class RenameEntryRequest(BaseModel):
     path: str
     new_name: str
+
+
+class MoveEntryRequest(BaseModel):
+    source_path: str
+    target_directory_path: str = ""
 
 
 @router.get("/profiles", response_model=ProfilesResponse)
@@ -283,4 +293,86 @@ def rename_profile_entry(
         path=renamed_entry.path,
         type=renamed_entry.type,
         size_bytes=renamed_entry.size_bytes,
+    )
+
+
+@router.post("/profiles/{profile_id}/entries/move", response_model=ProfileEntry)
+def move_profile_entry(
+    profile_id: str,
+    request: MoveEntryRequest,
+) -> ProfileEntry:
+    settings = get_settings()
+    try:
+        profile = load_enabled_profile(settings.profiles_config_path, profile_id)
+    except ProfilesConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PROFILES_UNAVAILABLE_MESSAGE,
+        ) from exc
+
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=PROFILE_NOT_FOUND_MESSAGE,
+        )
+
+    try:
+        moved_entry = move_entry(
+            profile.root_path,
+            request.source_path,
+            request.target_directory_path,
+        )
+    except InvalidEntryPathError as exc:
+        raise HTTPException(status_code=422, detail=INVALID_ENTRY_PATH_MESSAGE) from exc
+    except InvalidDirectoryPathError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=INVALID_DIRECTORY_PATH_MESSAGE,
+        ) from exc
+    except EntryNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ENTRY_NOT_FOUND_MESSAGE,
+        ) from exc
+    except DirectoryNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=DIRECTORY_NOT_FOUND_MESSAGE,
+        ) from exc
+    except RequestedPathNotDirectoryError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=REQUESTED_PATH_NOT_DIRECTORY_MESSAGE,
+        ) from exc
+    except RequestedEntryNotAllowedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=REQUESTED_ENTRY_NOT_ALLOWED_MESSAGE,
+        ) from exc
+    except RequestedDirectoryNotAllowedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=REQUESTED_DIRECTORY_NOT_ALLOWED_MESSAGE,
+        ) from exc
+    except CannotMoveDirectoryIntoItselfError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=CANNOT_MOVE_DIRECTORY_INTO_ITSELF_MESSAGE,
+        ) from exc
+    except EntryAlreadyExistsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=ENTRY_ALREADY_EXISTS_MESSAGE,
+        ) from exc
+    except ProfileStorageUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PROFILE_STORAGE_UNAVAILABLE_MESSAGE,
+        ) from exc
+
+    return ProfileEntry(
+        name=moved_entry.name,
+        path=moved_entry.path,
+        type=moved_entry.type,
+        size_bytes=moved_entry.size_bytes,
     )

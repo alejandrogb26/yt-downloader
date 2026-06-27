@@ -10,7 +10,7 @@
 - MariaDB: base de datos relacional para persistencia.
 - Almacenamiento NFS: destino compartido para los archivos descargados.
 
-Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de solo lectura por el contenido de esas bibliotecas, la creación segura de directorios y el renombrado seguro de ficheros/directorios. No se incluye Docker, MariaDB, workers, yt-dlp, frontend, Caddy ni systemd.
+Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de solo lectura por el contenido de esas bibliotecas, la creación segura de directorios, el renombrado seguro de ficheros/directorios y el movimiento de entradas dentro de un mismo perfil. No se incluye Docker, MariaDB, workers, yt-dlp, frontend, Caddy ni systemd.
 
 ## Perfiles de biblioteca
 
@@ -24,7 +24,9 @@ La API `POST /api/v1/profiles/{profile_id}/directories` permite crear directorio
 
 La API `PATCH /api/v1/profiles/{profile_id}/entries/rename` permite renombrar ficheros y directorios normales. El renombrado se limita al mismo directorio padre: `new_name` es solo un nombre, no una ruta, y no se acepta movimiento entre directorios.
 
-Límites actuales: no hay movimiento entre directorios, eliminación, papelera, descargas, base de datos ni autenticación.
+La API `POST /api/v1/profiles/{profile_id}/entries/move` permite mover ficheros y directorios normales entre directorios de la misma biblioteca del perfil. El movimiento conserva siempre el nombre original y el destino debe ser un directorio existente dentro del mismo perfil.
+
+Límites actuales: no hay eliminación, papelera, descargas, base de datos ni autenticación.
 
 Hay un ejemplo versionable en `config/profiles.example.json`. El fichero real `config/profiles.json` está ignorado por Git.
 
@@ -99,6 +101,14 @@ Renombrar una entrada:
 curl -X PATCH http://127.0.0.1:8080/api/v1/profiles/pepe/entries/rename \
   -H 'Content-Type: application/json' \
   -d '{"path":"Rock/cancion-vieja.mp3","new_name":"cancion-nueva.mp3"}'
+```
+
+Mover una entrada:
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/profiles/pepe/entries/move \
+  -H 'Content-Type: application/json' \
+  -d '{"source_path":"Rock/cancion.mp3","target_directory_path":"Favoritas"}'
 ```
 
 ## Docker

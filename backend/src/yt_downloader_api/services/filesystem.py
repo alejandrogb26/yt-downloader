@@ -28,6 +28,14 @@ class RequestedEntryNotAllowedError(Exception):
     """Raised when the requested entry exists but cannot be operated on."""
 
 
+class RequestedDirectoryNotAllowedError(Exception):
+    """Raised when the requested directory cannot be operated on."""
+
+
+class CannotMoveDirectoryIntoItselfError(Exception):
+    """Raised when a directory move targets itself or one of its children."""
+
+
 class ProfileStorageUnavailableError(Exception):
     """Raised when profile storage cannot be used safely."""
 
@@ -136,6 +144,51 @@ def rename_entry(root_path: str, relative_path: str, new_name: str) -> FileSyste
         raise ProfileStorageUnavailableError from exc
 
     return to_file_system_entry(target, parent_path)
+
+
+def move_entry(
+    root_path: str,
+    source_path: str,
+    target_directory_path: str = "",
+) -> FileSystemEntry:
+    root = Path(root_path)
+    safe_source_path = validate_relative_entry_path(source_path)
+    safe_target_directory_path = validate_relative_directory_path(target_directory_path)
+    ensure_writable_root(root)
+
+    source = resolve_entry(root, safe_source_path)
+    source_parent_path = get_parent_relative_path(safe_source_path)
+    target_directory = resolve_target_directory(root, safe_target_directory_path)
+
+    if source_parent_path == safe_target_directory_path:
+        return to_file_system_entry(source, source_parent_path)
+
+    if source.is_dir() and is_self_or_child_path(
+        safe_source_path,
+        safe_target_directory_path,
+    ):
+        raise CannotMoveDirectoryIntoItselfError
+
+    target = target_directory / source.name
+    try:
+        target.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ProfileStorageUnavailableError from exc
+    else:
+        raise EntryAlreadyExistsError
+
+    try:
+        source.rename(target)
+    except FileNotFoundError as exc:
+        raise EntryNotFoundError from exc
+    except FileExistsError as exc:
+        raise EntryAlreadyExistsError from exc
+    except OSError as exc:
+        raise ProfileStorageUnavailableError from exc
+
+    return to_file_system_entry(target, safe_target_directory_path)
 
 
 def validate_relative_directory_path(relative_path: str) -> str:
@@ -258,6 +311,28 @@ def resolve_entry(root: Path, relative_path: str) -> Path:
     return entry
 
 
+def resolve_target_directory(root: Path, relative_path: str) -> Path:
+    current = root
+    if relative_path == "":
+        return current
+
+    for part in relative_path.split("/"):
+        current = current / part
+        try:
+            current_status = current.stat(follow_symlinks=False)
+        except FileNotFoundError as exc:
+            raise DirectoryNotFoundError from exc
+        except OSError as exc:
+            raise ProfileStorageUnavailableError from exc
+
+        if current.is_symlink():
+            raise RequestedDirectoryNotAllowedError
+        if not stat.S_ISDIR(current_status.st_mode):
+            raise RequestedPathNotDirectoryError
+
+    return current
+
+
 def is_listable_entry(entry: Path) -> bool:
     if entry.name.startswith(".") or entry.is_symlink():
         return False
@@ -291,3 +366,9 @@ def get_parent_relative_path(relative_path: str) -> str:
     if parent == ".":
         return ""
     return parent
+
+
+def is_self_or_child_path(source_path: str, target_directory_path: str) -> bool:
+    return target_directory_path == source_path or target_directory_path.startswith(
+        f"{source_path}/"
+    )
