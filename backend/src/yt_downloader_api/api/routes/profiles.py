@@ -4,10 +4,17 @@ from pydantic import BaseModel
 from yt_downloader_api.core.config import get_settings
 from yt_downloader_api.services.filesystem import (
     DirectoryNotFoundError,
+    EntryAlreadyExistsError,
+    EntryNotFoundError,
+    InvalidDirectoryNameError,
     InvalidDirectoryPathError,
+    InvalidEntryPathError,
     ProfileStorageUnavailableError,
+    RequestedEntryNotAllowedError,
     RequestedPathNotDirectoryError,
+    create_directory,
     list_directory_entries,
+    rename_entry,
     validate_relative_directory_path,
 )
 from yt_downloader_api.services.profiles import (
@@ -21,9 +28,15 @@ router = APIRouter(tags=["profiles"])
 PROFILES_UNAVAILABLE_MESSAGE = "Profiles configuration is unavailable."
 PROFILE_NOT_FOUND_MESSAGE = "Profile not found."
 INVALID_DIRECTORY_PATH_MESSAGE = "Invalid directory path."
+INVALID_DIRECTORY_NAME_MESSAGE = "Invalid directory name."
+INVALID_ENTRY_PATH_MESSAGE = "Invalid entry path."
+INVALID_ENTRY_NAME_MESSAGE = "Invalid entry name."
 DIRECTORY_NOT_FOUND_MESSAGE = "Directory not found."
+ENTRY_NOT_FOUND_MESSAGE = "Entry not found."
+REQUESTED_ENTRY_NOT_ALLOWED_MESSAGE = "Requested entry is not allowed."
 REQUESTED_PATH_NOT_DIRECTORY_MESSAGE = "Requested path is not a directory."
 PROFILE_STORAGE_UNAVAILABLE_MESSAGE = "Profile storage is unavailable."
+ENTRY_ALREADY_EXISTS_MESSAGE = "An entry with this name already exists."
 
 
 class PublicProfile(BaseModel):
@@ -46,6 +59,22 @@ class ProfileEntriesResponse(BaseModel):
     profile: PublicProfile
     path: str
     entries: list[ProfileEntry]
+
+
+class CreateDirectoryRequest(BaseModel):
+    parent_path: str = ""
+    name: str
+
+
+class CreatedDirectoryResponse(BaseModel):
+    name: str
+    path: str
+    type: str
+
+
+class RenameEntryRequest(BaseModel):
+    path: str
+    new_name: str
 
 
 @router.get("/profiles", response_model=ProfilesResponse)
@@ -127,4 +156,131 @@ def list_profile_entries(profile_id: str, path: str = "") -> ProfileEntriesRespo
             )
             for entry in entries
         ],
+    )
+
+
+@router.post(
+    "/profiles/{profile_id}/directories",
+    response_model=CreatedDirectoryResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_profile_directory(
+    profile_id: str,
+    request: CreateDirectoryRequest,
+) -> CreatedDirectoryResponse:
+    settings = get_settings()
+    try:
+        profile = load_enabled_profile(settings.profiles_config_path, profile_id)
+    except ProfilesConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PROFILES_UNAVAILABLE_MESSAGE,
+        ) from exc
+
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=PROFILE_NOT_FOUND_MESSAGE,
+        )
+
+    try:
+        created_directory = create_directory(
+            profile.root_path,
+            request.parent_path,
+            request.name,
+        )
+    except InvalidDirectoryPathError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=INVALID_DIRECTORY_PATH_MESSAGE,
+        ) from exc
+    except InvalidDirectoryNameError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=INVALID_DIRECTORY_NAME_MESSAGE,
+        ) from exc
+    except DirectoryNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=DIRECTORY_NOT_FOUND_MESSAGE,
+        ) from exc
+    except RequestedPathNotDirectoryError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=REQUESTED_PATH_NOT_DIRECTORY_MESSAGE,
+        ) from exc
+    except EntryAlreadyExistsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=ENTRY_ALREADY_EXISTS_MESSAGE,
+        ) from exc
+    except ProfileStorageUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PROFILE_STORAGE_UNAVAILABLE_MESSAGE,
+        ) from exc
+
+    return CreatedDirectoryResponse(
+        name=created_directory.name,
+        path=created_directory.path,
+        type=created_directory.type,
+    )
+
+
+@router.patch("/profiles/{profile_id}/entries/rename", response_model=ProfileEntry)
+def rename_profile_entry(
+    profile_id: str,
+    request: RenameEntryRequest,
+) -> ProfileEntry:
+    settings = get_settings()
+    try:
+        profile = load_enabled_profile(settings.profiles_config_path, profile_id)
+    except ProfilesConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PROFILES_UNAVAILABLE_MESSAGE,
+        ) from exc
+
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=PROFILE_NOT_FOUND_MESSAGE,
+        )
+
+    try:
+        renamed_entry = rename_entry(
+            profile.root_path,
+            request.path,
+            request.new_name,
+        )
+    except InvalidEntryPathError as exc:
+        raise HTTPException(status_code=422, detail=INVALID_ENTRY_PATH_MESSAGE) from exc
+    except InvalidDirectoryNameError as exc:
+        raise HTTPException(status_code=422, detail=INVALID_ENTRY_NAME_MESSAGE) from exc
+    except EntryNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ENTRY_NOT_FOUND_MESSAGE,
+        ) from exc
+    except RequestedEntryNotAllowedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=REQUESTED_ENTRY_NOT_ALLOWED_MESSAGE,
+        ) from exc
+    except EntryAlreadyExistsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=ENTRY_ALREADY_EXISTS_MESSAGE,
+        ) from exc
+    except ProfileStorageUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PROFILE_STORAGE_UNAVAILABLE_MESSAGE,
+        ) from exc
+
+    return ProfileEntry(
+        name=renamed_entry.name,
+        path=renamed_entry.path,
+        type=renamed_entry.type,
+        size_bytes=renamed_entry.size_bytes,
     )

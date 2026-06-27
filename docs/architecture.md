@@ -5,7 +5,7 @@
 ## Componentes previstos
 
 - Frontend: aplicación web separada para gestionar descargas y consultar estados. No implementado todavía.
-- Backend: API FastAPI con Pydantic v2. Actualmente incluye configuración base, `GET /api/v1/health`, `GET /api/v1/profiles` y navegación de solo lectura con `GET /api/v1/profiles/{profile_id}/entries`.
+- Backend: API FastAPI con Pydantic v2. Actualmente incluye configuración base, `GET /api/v1/health`, `GET /api/v1/profiles`, navegación con `GET /api/v1/profiles/{profile_id}/entries`, creación de directorios con `POST /api/v1/profiles/{profile_id}/directories` y renombrado con `PATCH /api/v1/profiles/{profile_id}/entries/rename`.
 - Worker de descargas: proceso independiente para ejecutar descargas con yt-dlp. No implementado todavía.
 - MariaDB: base de datos para perfiles, trabajos, estados y metadatos. No implementada todavía.
 - Almacenamiento NFS: ubicación compartida para archivos descargados. No implementado todavía.
@@ -29,9 +29,13 @@ PROFILES_CONFIG_PATH="$PWD/config/profiles.example.json" uv run --project backen
 
 La API de navegación usa siempre rutas relativas al `root_path` del perfil. El cliente nunca recibe rutas reales del sistema, rutas absolutas ni el valor de `root_path`.
 
-La navegación actual es de solo lectura. Solo se listan ficheros y directorios normales; se ocultan elementos cuyo nombre empieza por `.` y enlaces simbólicos. Tampoco se permite navegar a través de enlaces simbólicos.
+Solo se listan ficheros y directorios normales; se ocultan elementos cuyo nombre empieza por `.` y enlaces simbólicos. Tampoco se permite navegar a través de enlaces simbólicos.
 
-El sistema de archivos NFS será la fuente de verdad de las bibliotecas. Todavía no hay operaciones de escritura, descargas con yt-dlp, worker ni persistencia en MariaDB.
+La creación de directorios está limitada estrictamente a la raíz del perfil configurado. La API valida rutas relativas y nombres de directorio antes de tocar el sistema de archivos, no usa comandos externos y no expone rutas absolutas.
+
+El renombrado de ficheros y directorios se limita al mismo directorio padre. El campo `new_name` se trata únicamente como nombre de entrada, no como ruta, por lo que no permite mover elementos entre directorios.
+
+El sistema de archivos NFS será la fuente de verdad de las bibliotecas. Todavía no hay movimiento entre directorios, eliminación, papelera, descargas con yt-dlp, worker ni persistencia en MariaDB.
 
 ## Estado actual
 
