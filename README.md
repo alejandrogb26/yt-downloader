@@ -7,10 +7,10 @@
 - `frontend`: aplicación web separada para operar el sistema.
 - `backend`: API HTTP con FastAPI y Pydantic v2.
 - Worker de descargas: proceso independiente para ejecutar descargas y actualizar estados.
-- MariaDB: base de datos relacional para persistencia.
+- MariaDB: base de datos relacional para trabajos de descarga, eventos e historial.
 - Almacenamiento NFS: destino compartido para los archivos descargados.
 
-Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la creación segura de directorios, el renombrado seguro de ficheros/directorios, el movimiento de entradas dentro de un mismo perfil y el envío de entradas a papelera. No se incluye Docker, MariaDB, workers, yt-dlp, frontend, Caddy ni systemd.
+Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la creación segura de directorios, el renombrado seguro de ficheros/directorios, el movimiento de entradas dentro de un mismo perfil, el envío de entradas a papelera y la base ORM/Alembic para persistir futuros trabajos de descarga. No se incluye Docker, workers, yt-dlp, frontend, Caddy ni systemd.
 
 ## Perfiles de biblioteca
 
@@ -28,7 +28,13 @@ La API `POST /api/v1/profiles/{profile_id}/entries/move` permite mover ficheros 
 
 La API `DELETE /api/v1/profiles/{profile_id}/entries` no borra definitivamente. Mueve ficheros y directorios normales a una papelera interna `.trash` dentro de la raíz del perfil. Esa carpeta no se expone en los listados normales.
 
-Límites actuales: no hay borrado definitivo, vaciado de papelera, restauración, descargas, base de datos ni autenticación.
+Límites actuales: no hay borrado definitivo, vaciado de papelera, restauración, endpoints de descargas, worker ni autenticación.
+
+## Persistencia
+
+MariaDB será la persistencia para trabajos de descarga, eventos e historial. No sustituye al sistema de archivos: las bibliotecas y los archivos siguen viviendo en NFS bajo las rutas de cada perfil.
+
+El esquema se aplica con Alembic. La API no crea tablas al arrancar y `GET /api/v1/health` funciona aunque `DATABASE_URL` no esté configurada.
 
 Hay un ejemplo versionable en `config/profiles.example.json`. El fichero real `config/profiles.json` está ignorado por Git.
 
@@ -56,6 +62,14 @@ Ejecutar Ruff:
 ```bash
 uv run --project backend ruff check .
 uv run --project backend ruff format --check .
+```
+
+Comandos Alembic:
+
+```bash
+uv run --project backend alembic -c backend/alembic.ini current
+uv run --project backend alembic -c backend/alembic.ini upgrade head
+uv run --project backend alembic -c backend/alembic.ini history
 ```
 
 Levantar la API en desarrollo:
