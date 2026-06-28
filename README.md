@@ -34,6 +34,10 @@ Límites actuales: no hay borrado definitivo, vaciado de papelera, restauración
 
 MariaDB será la persistencia para trabajos de descarga, eventos e historial. No sustituye al sistema de archivos: las bibliotecas y los archivos siguen viviendo en NFS bajo las rutas de cada perfil.
 
+La política inicial de descarga será solo audio, sin recodificación por defecto: se priorizará una pista M4A directa y, si no existe, se descargará el mejor audio disponible conservando el formato fuente. M4A es una preferencia de descarga, no una conversión forzada a M4A, MP3 o FLAC.
+
+MariaDB almacenará la política solicitada y, en el futuro, el formato técnico realmente obtenido: contenedor, códec, formato fuente y si se aplicó transcodificación. Inicialmente `transcode_applied` debe permanecer en `false`.
+
 El esquema se aplica con Alembic. La API no crea tablas al arrancar y `GET /api/v1/health` funciona aunque `DATABASE_URL` no esté configurada.
 
 Hay un ejemplo versionable en `config/profiles.example.json`. El fichero real `config/profiles.json` está ignorado por Git.

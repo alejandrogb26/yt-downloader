@@ -18,12 +18,17 @@ MariaDB no sustituye al sistema de archivos ni almacena los archivos descargados
 - `profile_id`: perfil de biblioteca definido en `profiles.json`, sin foreign key.
 - `source_url`: URL origen.
 - `destination_relative_path`: destino relativo dentro del perfil.
-- `requested_format`: formato solicitado, inicialmente `mp3`.
-- `requested_audio_quality`: calidad solicitada opcional.
+- `audio_policy`: política de audio solicitada, inicialmente `prefer_m4a_then_best_source`.
 - `status`: estado textual del trabajo.
 - `progress_percent`: progreso opcional.
 - `title`: título detectado opcional.
 - `output_relative_path`: salida final relativa opcional.
+- `source_format_id`: formato real seleccionado por yt-dlp.
+- `source_container`: contenedor de la fuente seleccionada.
+- `source_audio_codec`: códec de audio de la fuente seleccionada.
+- `output_container`: contenedor real del archivo final.
+- `output_audio_codec`: códec de audio real del archivo final.
+- `transcode_applied`: indica si se aplicó transcodificación. Inicialmente será `false`.
 - `error_code` y `error_message`: error opcional.
 - `worker_id`: worker que procesa el trabajo.
 - `attempt_count`: número de intentos.
@@ -36,6 +41,26 @@ Estados iniciales:
 - `completed`
 - `failed`
 - `cancelled`
+
+## Política de Audio
+
+La primera versión descargará solo audio. No descargará vídeo y no debe convertir por defecto a MP3, FLAC ni ningún otro formato.
+
+La política inicial es:
+
+```text
+prefer_m4a_then_best_source
+```
+
+La futura selección de yt-dlp será equivalente a:
+
+```text
+bestaudio[ext=m4a]/bestaudio
+```
+
+M4A es una preferencia de descarga directa, no una conversión forzada. Si existe M4A, el resultado esperado normalmente será M4A/AAC. Si no existe, se conservará el mejor audio disponible, por ejemplo WebM/Opus.
+
+Los campos técnicos de `download_jobs` registrarán el formato real obtenido. `transcode_applied` queda preparado para una posible conversión de compatibilidad futura, pero inicialmente será `false`.
 
 `download_job_events` almacena eventos relevantes de cada trabajo:
 

@@ -57,6 +57,20 @@ MariaDB no sustituye a NFS. Los archivos descargados y las bibliotecas seguirán
 
 El esquema se gestiona con Alembic. No se crean tablas automáticamente al iniciar FastAPI.
 
+## Worker Futuro
+
+El worker futuro descargará solo audio. La política inicial será priorizar una pista M4A directa y, si no existe, conservar el mejor audio disponible sin recodificar.
+
+Comportamiento previsto:
+
+- Selecciona solo audio.
+- Prioriza M4A.
+- Conserva el formato fuente si no hay M4A.
+- No recodifica por defecto.
+- Registra el formato real obtenido.
+
+La compatibilidad de formatos de fallback con Audio Station se comprobará más adelante. No hay conversión de compatibilidad en esta fase.
+
 ## Estado actual
 
 La parte funcional actual es el backend en `backend`, ejecutable con Uvicorn en `127.0.0.1:8080`.

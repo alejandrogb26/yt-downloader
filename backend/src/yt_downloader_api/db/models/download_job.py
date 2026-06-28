@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Index, String, Text
+from sqlalchemy import Boolean, Index, String, Text, false
 from sqlalchemy.dialects.mysql import CHAR, DATETIME, INTEGER
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import expression
@@ -21,6 +21,10 @@ class DownloadJobStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+class AudioPolicy(StrEnum):
+    PREFER_M4A_THEN_BEST_SOURCE = "prefer_m4a_then_best_source"
 
 
 def utc_now() -> datetime:
@@ -43,13 +47,12 @@ class DownloadJob(Base):
         default="",
         server_default="",
     )
-    requested_format: Mapped[str] = mapped_column(
-        String(16),
+    audio_policy: Mapped[str] = mapped_column(
+        String(64),
         nullable=False,
-        default="mp3",
-        server_default="mp3",
+        default=AudioPolicy.PREFER_M4A_THEN_BEST_SOURCE.value,
+        server_default=AudioPolicy.PREFER_M4A_THEN_BEST_SOURCE.value,
     )
-    requested_audio_quality: Mapped[str | None] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
@@ -59,6 +62,17 @@ class DownloadJob(Base):
     progress_percent: Mapped[int | None] = mapped_column(INTEGER(unsigned=True))
     title: Mapped[str | None] = mapped_column(String(512))
     output_relative_path: Mapped[str | None] = mapped_column(String(1024))
+    source_format_id: Mapped[str | None] = mapped_column(String(64))
+    source_container: Mapped[str | None] = mapped_column(String(16))
+    source_audio_codec: Mapped[str | None] = mapped_column(String(32))
+    output_container: Mapped[str | None] = mapped_column(String(16))
+    output_audio_codec: Mapped[str | None] = mapped_column(String(32))
+    transcode_applied: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
+    )
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(Text)
     worker_id: Mapped[str | None] = mapped_column(String(128))
