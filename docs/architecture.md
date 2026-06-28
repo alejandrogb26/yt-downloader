@@ -57,6 +57,14 @@ MariaDB no sustituye a NFS. Los archivos descargados y las bibliotecas seguirán
 
 El esquema se gestiona con Alembic. No se crean tablas automáticamente al iniciar FastAPI.
 
+Flujo actual para registrar un trabajo:
+
+```text
+Cliente -> FastAPI -> validación de perfil y destino NFS -> MariaDB
+```
+
+La API solo registra el trabajo en cola. No ejecuta yt-dlp, FFmpeg ni procesos externos.
+
 ## Worker Futuro
 
 El worker futuro descargará solo audio. La política inicial será priorizar una pista M4A directa y, si no existe, conservar el mejor audio disponible sin recodificar.

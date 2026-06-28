@@ -10,6 +10,8 @@ MariaDB será la base de datos relacional del sistema para trabajos de descarga,
 
 MariaDB no sustituye al sistema de archivos ni almacena los archivos descargados.
 
+Cada trabajo creado en estado `queued` genera también un evento inicial en `download_job_events` con el mensaje `Download job queued.`. La creación del trabajo y del evento debe ser atómica.
+
 ## Tablas Iniciales
 
 `download_jobs` almacena un trabajo de descarga:

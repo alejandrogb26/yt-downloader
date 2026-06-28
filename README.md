@@ -10,7 +10,7 @@
 - MariaDB: base de datos relacional para trabajos de descarga, eventos e historial.
 - Almacenamiento NFS: destino compartido para los archivos descargados.
 
-Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la creación segura de directorios, el renombrado seguro de ficheros/directorios, el movimiento de entradas dentro de un mismo perfil, el envío de entradas a papelera y la base ORM/Alembic para persistir futuros trabajos de descarga. No se incluye Docker, workers, yt-dlp, frontend, Caddy ni systemd.
+Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la creación segura de directorios, el renombrado seguro de ficheros/directorios, el movimiento de entradas dentro de un mismo perfil, el envío de entradas a papelera, la base ORM/Alembic y el registro de trabajos de descarga en cola. No se incluye Docker, workers, yt-dlp, frontend, Caddy ni systemd.
 
 ## Perfiles de biblioteca
 
@@ -28,7 +28,9 @@ La API `POST /api/v1/profiles/{profile_id}/entries/move` permite mover ficheros 
 
 La API `DELETE /api/v1/profiles/{profile_id}/entries` no borra definitivamente. Mueve ficheros y directorios normales a una papelera interna `.trash` dentro de la raíz del perfil. Esa carpeta no se expone en los listados normales.
 
-Límites actuales: no hay borrado definitivo, vaciado de papelera, restauración, endpoints de descargas, worker ni autenticación.
+La API `POST /api/v1/downloads` registra un trabajo de descarga en MariaDB con estado inicial `queued`, pero todavía no inicia ninguna descarga ni ejecuta procesos externos.
+
+Límites actuales: no hay borrado definitivo, vaciado de papelera, restauración, ejecución de descargas, worker ni autenticación.
 
 ## Persistencia
 
@@ -137,6 +139,14 @@ Enviar una entrada a papelera:
 curl -X DELETE http://127.0.0.1:8080/api/v1/profiles/pepe/entries \
   -H 'Content-Type: application/json' \
   -d '{"path":"Rock/cancion.mp3"}'
+```
+
+Registrar un trabajo de descarga en cola:
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/downloads \
+  -H 'Content-Type: application/json' \
+  -d '{"profile_id":"pepe","source_url":"https://www.youtube.com/watch?v=VIDEO_ID","destination_path":"Rock/Clasicos"}'
 ```
 
 ## Docker
