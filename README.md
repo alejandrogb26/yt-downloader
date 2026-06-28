@@ -10,7 +10,7 @@
 - MariaDB: base de datos relacional para trabajos de descarga, eventos e historial.
 - Almacenamiento NFS: destino compartido para los archivos descargados.
 
-Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la creación segura de directorios, el renombrado seguro de ficheros/directorios, el movimiento de entradas dentro de un mismo perfil, el envío de entradas a papelera, la base ORM/Alembic y el registro de trabajos de descarga en cola. No se incluye Docker, workers, yt-dlp, frontend, Caddy ni systemd.
+Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la creación segura de directorios, el renombrado seguro de ficheros/directorios, el movimiento de entradas dentro de un mismo perfil, el envío de entradas a papelera, la base ORM/Alembic, el registro de trabajos de descarga en cola y la consulta de trabajos/eventos. No se incluye Docker, workers, yt-dlp, frontend, Caddy ni systemd.
 
 ## Perfiles de biblioteca
 
@@ -28,7 +28,7 @@ La API `POST /api/v1/profiles/{profile_id}/entries/move` permite mover ficheros 
 
 La API `DELETE /api/v1/profiles/{profile_id}/entries` no borra definitivamente. Mueve ficheros y directorios normales a una papelera interna `.trash` dentro de la raíz del perfil. Esa carpeta no se expone en los listados normales.
 
-La API `POST /api/v1/downloads` registra un trabajo de descarga en MariaDB con estado inicial `queued`, pero todavía no inicia ninguna descarga ni ejecuta procesos externos.
+La API `POST /api/v1/downloads` registra un trabajo de descarga en MariaDB con estado inicial `queued`, pero todavía no inicia ninguna descarga ni ejecuta procesos externos. También se pueden listar trabajos, consultar su detalle y ver sus eventos.
 
 Límites actuales: no hay borrado definitivo, vaciado de papelera, restauración, ejecución de descargas, worker ni autenticación.
 
@@ -147,6 +147,14 @@ Registrar un trabajo de descarga en cola:
 curl -X POST http://127.0.0.1:8080/api/v1/downloads \
   -H 'Content-Type: application/json' \
   -d '{"profile_id":"pepe","source_url":"https://www.youtube.com/watch?v=VIDEO_ID","destination_path":"Rock/Clasicos"}'
+```
+
+Consultar trabajos y eventos:
+
+```bash
+curl 'http://127.0.0.1:8080/api/v1/downloads?limit=25&offset=0'
+curl http://127.0.0.1:8080/api/v1/downloads/JOB_UUID
+curl 'http://127.0.0.1:8080/api/v1/downloads/JOB_UUID/events?limit=50&offset=0'
 ```
 
 ## Docker

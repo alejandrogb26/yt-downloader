@@ -63,6 +63,14 @@ Flujo actual para registrar un trabajo:
 Cliente -> FastAPI -> validación de perfil y destino NFS -> MariaDB
 ```
 
+Flujo actual para consultar cola e historial:
+
+```text
+Cliente -> FastAPI -> MariaDB
+                  ^
+          consulta de cola e historial
+```
+
 La API solo registra el trabajo en cola. No ejecuta yt-dlp, FFmpeg ni procesos externos.
 
 ## Worker Futuro

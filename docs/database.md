@@ -1,6 +1,6 @@
 # Base de Datos
 
-MariaDB será la base de datos relacional del sistema para trabajos de descarga, eventos asociados, estados e historial operativo.
+MariaDB será la base de datos relacional del sistema para la cola de trabajos de descarga, eventos asociados, estados e historial operativo.
 
 ## Responsabilidades
 
@@ -14,7 +14,7 @@ Cada trabajo creado en estado `queued` genera también un evento inicial en `dow
 
 ## Tablas Iniciales
 
-`download_jobs` almacena un trabajo de descarga:
+`download_jobs` almacena la cola y el historial de trabajos de descarga:
 
 - `id`: UUID textual del trabajo.
 - `profile_id`: perfil de biblioteca definido en `profiles.json`, sin foreign key.
@@ -72,6 +72,8 @@ Los campos técnicos de `download_jobs` registrarán el formato real obtenido. `
 - `level`: nivel del evento.
 - `message`: mensaje resumido.
 - `progress_percent`: progreso opcional.
+
+Los listados de trabajos consultan historial persistido y no dependen de que el perfil siga existiendo o esté habilitado actualmente en `profiles.json`.
 
 ## DATABASE_URL
 
