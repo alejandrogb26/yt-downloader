@@ -6,9 +6,13 @@ import pytest
 from yt_downloader_api.core.config import Settings, get_settings
 from yt_downloader_api.db.models import DownloadJob, DownloadJobEvent, DownloadJobStatus
 from yt_downloader_api.services.download_queue import (
+    CompletedDownloadJob,
     claim_next_queued_job,
+    mark_running_job_as_completed,
+    mark_running_job_as_failed,
     mark_stale_running_jobs_as_failed,
     touch_job_heartbeat,
+    update_running_job_progress,
 )
 from yt_downloader_api.services.download_state import (
     InvalidDownloadStateTransitionError,
@@ -102,6 +106,120 @@ class InMemoryDownloadQueueRepository:
         job.updated_at = touched_at
         return True
 
+    def update_running_job_progress(
+        self,
+        job_id: str,
+        worker_id: str,
+        progress_percent: int | None,
+        updated_at: datetime,
+    ) -> bool:
+        job = self.get_current_running_job(job_id, worker_id)
+        if job is None:
+            return False
+        job.progress_percent = progress_percent
+        job.heartbeat_at = updated_at
+        job.updated_at = updated_at
+        return True
+
+    def add_running_job_event(
+        self,
+        job_id: str,
+        worker_id: str,
+        level: str,
+        message: str,
+        progress_percent: int | None,
+        created_at: datetime,
+    ) -> bool:
+        if self.get_current_running_job(job_id, worker_id) is None:
+            return False
+        self.events.append(
+            make_event(
+                job_id,
+                len(self.events) + 1,
+                created_at,
+                level,
+                message,
+                progress_percent,
+            )
+        )
+        return True
+
+    def mark_running_job_as_completed(
+        self,
+        job_id: str,
+        worker_id: str,
+        completed: CompletedDownloadJob,
+        completed_at: datetime,
+    ) -> bool:
+        job = self.get_current_running_job(job_id, worker_id)
+        if job is None:
+            return False
+        job.status = DownloadJobStatus.COMPLETED.value
+        job.progress_percent = 100
+        job.title = completed.title
+        job.output_relative_path = completed.output_relative_path
+        job.source_format_id = completed.source_format_id
+        job.source_container = completed.source_container
+        job.source_audio_codec = completed.source_audio_codec
+        job.output_container = completed.output_container
+        job.output_audio_codec = completed.output_audio_codec
+        job.transcode_applied = False
+        job.updated_at = completed_at
+        job.heartbeat_at = completed_at
+        job.finished_at = completed_at
+        self.events.append(
+            make_event(
+                job.id,
+                len(self.events) + 1,
+                completed_at,
+                "info",
+                "Download completed.",
+                100,
+            )
+        )
+        return True
+
+    def mark_running_job_as_failed(
+        self,
+        job_id: str,
+        worker_id: str,
+        error_code: str,
+        error_message: str,
+        failed_at: datetime,
+    ) -> bool:
+        job = self.get_current_running_job(job_id, worker_id)
+        if job is None:
+            return False
+        job.status = DownloadJobStatus.FAILED.value
+        job.error_code = error_code
+        job.error_message = error_message
+        job.updated_at = failed_at
+        job.finished_at = failed_at
+        self.events.append(
+            make_event(
+                job.id,
+                len(self.events) + 1,
+                failed_at,
+                "error",
+                error_message,
+            )
+        )
+        return True
+
+    def get_current_running_job(
+        self,
+        job_id: str,
+        worker_id: str,
+    ) -> DownloadJob | None:
+        job = next((item for item in self.jobs if item.id == job_id), None)
+        if (
+            job is None
+            or job.status != DownloadJobStatus.RUNNING.value
+            or job.worker_id != worker_id
+        ):
+            return None
+        return job
+
 
 def make_job(
     job_id: str,
@@ -146,6 +264,7 @@ def make_event(
     created_at: datetime,
     level: str,
     message: str,
+    progress_percent: int | None = None,
 ) -> DownloadJobEvent:
     return DownloadJobEvent(
         id=event_id,
@@ -153,7 +272,7 @@ def make_event(
         created_at=created_at,
         level=level,
         message=message,
-        progress_percent=None,
+        progress_percent=progress_percent,
     )
 
 
@@ -300,6 +419,73 @@ def test_touch_job_heartbeat_requires_running_job_and_matching_worker() -> None:
     assert repository.events == []
 
 
+def test_marks_running_job_as_completed_with_technical_fields() -> None:
+    repository = InMemoryDownloadQueueRepository()
+    now = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
+    job_id = "00000000-0000-4000-8000-000000000001"
+    repository.jobs = [make_job(job_id, now, status="running", worker_id="worker-1")]
+    completed = CompletedDownloadJob(
+        title="Song",
+        output_relative_path="Rock/Song [abc].m4a",
+        source_format_id="140",
+        source_container="m4a",
+        source_audio_codec="aac",
+        output_container="m4a",
+        output_audio_codec="aac",
+    )
+
+    assert mark_running_job_as_completed(repository, job_id, "worker-1", completed)
+
+    job = repository.jobs[0]
+    assert job.status == "completed"
+    assert job.progress_percent == 100
+    assert job.title == "Song"
+    assert job.output_relative_path == "Rock/Song [abc].m4a"
+    assert job.source_format_id == "140"
+    assert job.source_container == "m4a"
+    assert job.source_audio_codec == "aac"
+    assert job.output_container == "m4a"
+    assert job.output_audio_codec == "aac"
+    assert job.transcode_applied is False
+    assert repository.events[-1].message == "Download completed."
+    assert repository.events[-1].progress_percent == 100
+
+
+def test_marks_running_job_as_failed_with_safe_error() -> None:
+    repository = InMemoryDownloadQueueRepository()
+    now = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
+    job_id = "00000000-0000-4000-8000-000000000001"
+    repository.jobs = [make_job(job_id, now, status="running", worker_id="worker-1")]
+
+    assert mark_running_job_as_failed(
+        repository,
+        job_id,
+        "worker-1",
+        "download_failed",
+        "Audio download failed.",
+    )
+
+    job = repository.jobs[0]
+    assert job.status == "failed"
+    assert job.error_code == "download_failed"
+    assert job.error_message == "Audio download failed."
+    assert repository.events[-1].level == "error"
+    assert repository.events[-1].message == "Audio download failed."
+
+
+def test_updates_progress_and_heartbeat_without_events() -> None:
+    repository = InMemoryDownloadQueueRepository()
+    now = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
+    job_id = "00000000-0000-4000-8000-000000000001"
+    repository.jobs = [make_job(job_id, now, status="running", worker_id="worker-1")]
+
+    assert update_running_job_progress(repository, job_id, "worker-1", 42)
+
+    assert repository.jobs[0].progress_percent == 42
+    assert repository.jobs[0].heartbeat_at is not None
+    assert repository.events == []
+
+
 def test_worker_run_once_without_jobs(capsys: pytest.CaptureFixture[str]) -> None:
     repository = InMemoryDownloadQueueRepository()
     settings = Settings(database_url="mysql+pymysql://user:pass@host:3306/db")
@@ -319,13 +505,68 @@ def test_worker_run_once_claims_single_job(capsys: pytest.CaptureFixture[str]) -
     job_id = "00000000-0000-4000-8000-000000000001"
     repository.jobs = [make_job(job_id, datetime(2026, 6, 28, tzinfo=UTC))]
 
-    exit_code = run_once(settings, repository)
+    def complete_job(
+        _settings: Settings,
+        _repository: InMemoryDownloadQueueRepository,
+        _downloader: object,
+        job: object,
+        worker_id: str,
+    ) -> bool:
+        assert isinstance(job, DownloadJob)
+        return mark_running_job_as_completed(
+            repository,
+            job.id,
+            worker_id,
+            CompletedDownloadJob(
+                title="Song",
+                output_relative_path="Song [id].m4a",
+                source_format_id="140",
+                source_container="m4a",
+                source_audio_codec="aac",
+                output_container="m4a",
+                output_audio_codec="aac",
+            ),
+        )
+
+    exit_code = run_once(settings, repository, executor=complete_job)
 
     output = capsys.readouterr().out
     assert exit_code == 0
     assert job_id in output
-    assert "marked as running" in output
-    assert repository.jobs[0].status == "running"
+    assert "completed" in output
+    assert repository.jobs[0].status == "completed"
+    assert [event.message for event in repository.events][-2:] == [
+        "Download started.",
+        "Download completed.",
+    ]
+
+
+def test_worker_run_once_marks_interrupted_job_failed(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repository = InMemoryDownloadQueueRepository()
+    settings = Settings(
+        database_url="mysql+pymysql://user:pass@host:3306/db",
+        worker_id="worker-1",
+    )
+    job_id = "00000000-0000-4000-8000-000000000001"
+    repository.jobs = [make_job(job_id, datetime(2026, 6, 28, tzinfo=UTC))]
+
+    def interrupt_job(
+        _settings: Settings,
+        _repository: InMemoryDownloadQueueRepository,
+        _downloader: object,
+        _job: object,
+        _worker_id: str,
+    ) -> bool:
+        raise KeyboardInterrupt
+
+    exit_code = run_once(settings, repository, executor=interrupt_job)
+
+    assert exit_code == 1
+    assert "interrupted" in capsys.readouterr().out
+    assert repository.jobs[0].status == "failed"
+    assert repository.jobs[0].error_code == "worker_interrupted"
 
 
 def test_worker_main_without_database_url(

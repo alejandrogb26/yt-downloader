@@ -6,7 +6,7 @@
 
 - Frontend: aplicación web separada para gestionar descargas y consultar estados. No implementado todavía.
 - Backend: API FastAPI con Pydantic v2. Actualmente incluye configuración base, `GET /api/v1/health`, `GET /api/v1/profiles`, navegación con `GET /api/v1/profiles/{profile_id}/entries`, creación de directorios con `POST /api/v1/profiles/{profile_id}/directories`, renombrado con `PATCH /api/v1/profiles/{profile_id}/entries/rename`, movimiento con `POST /api/v1/profiles/{profile_id}/entries/move`, envío a papelera con `DELETE /api/v1/profiles/{profile_id}/entries` y endpoints para crear y consultar trabajos de descarga.
-- Worker de descargas: proceso independiente mínimo para reclamar trabajos de MariaDB y detectar trabajos obsoletos. Todavía no ejecuta yt-dlp ni FFmpeg.
+- Worker de descargas: proceso independiente one-shot para reclamar un trabajo de MariaDB, descargar una pista de audio con `yt-dlp`, publicar el resultado en NFS y finalizar el estado.
 - MariaDB: base de datos para trabajos de descarga, eventos, estados e historial. La capa ORM y las migraciones iniciales ya están preparadas.
 - Almacenamiento NFS: ubicación compartida para archivos descargados. No implementado todavía.
 - Infraestructura: configuración futura para servicios del sistema y proxy. No implementada todavía.
@@ -39,18 +39,21 @@ El movimiento de ficheros y directorios se limita a la misma biblioteca del perf
 
 La eliminación actual no borra definitivamente. Mueve la entrada a `.trash` dentro de la raíz del perfil, usando un nombre interno único. La API no devuelve la ubicación interna en papelera y `.trash` no aparece en los listados normales porque las entradas ocultas no se exponen.
 
-El sistema de archivos NFS será la fuente de verdad de las bibliotecas. Todavía no hay borrado definitivo, vaciado de papelera, restauración ni descargas con yt-dlp.
+El sistema de archivos NFS será la fuente de verdad de las bibliotecas. Todavía no hay borrado definitivo, vaciado de papelera ni restauración.
 
 ## Persistencia y flujo futuro
 
-La API FastAPI usa MariaDB para registrar trabajos de descarga y consultar sus eventos. El worker mínimo también usa MariaDB para tomar trabajos y actualizar estado.
+La API FastAPI usa MariaDB para registrar trabajos de descarga y consultar sus eventos. El worker one-shot también usa MariaDB para tomar trabajos, actualizar progreso, registrar eventos y cerrar estados.
 
 Flujo previsto:
 
 ```text
-FastAPI API -> MariaDB -> queued jobs
-Worker -> MariaDB -> claims queued job -> running
-Worker futuro -> staging local -> NFS
+FastAPI -> MariaDB -> queued job
+Worker -> MariaDB -> running
+Worker -> staging local
+Worker -> yt-dlp audio-only download
+Worker -> destination NFS
+Worker -> MariaDB -> completed / failed
 ```
 
 MariaDB no sustituye a NFS. Los archivos descargados y las bibliotecas seguirán viviendo en el sistema de archivos montado; MariaDB almacenará trabajos, estados, eventos y metadatos operativos.
@@ -73,19 +76,21 @@ Cliente -> FastAPI -> MariaDB
 
 La API solo registra el trabajo en cola. No ejecuta yt-dlp, FFmpeg ni procesos externos.
 
-Flujo actual del worker mínimo:
+Flujo actual del worker one-shot:
 
 ```text
 Worker -> MariaDB -> marca running obsoletos como failed
 Worker -> MariaDB -> reclama como máximo un queued -> running
-Worker -> sale sin descargar
+Worker -> staging local -> descarga audio con yt-dlp
+Worker -> NFS -> publica fichero final sin sobrescribir
+Worker -> MariaDB -> completed / failed
 ```
 
-El worker actualiza `heartbeat_at` al reclamar el trabajo. En esta fase el trabajo queda en `running` intencionadamente para validar la cola persistente antes de añadir ejecución real de descargas.
+El worker actualiza `heartbeat_at` al reclamar el trabajo y durante la descarga. El fichero se descarga primero bajo `DOWNLOAD_STAGING_ROOT/<job_id>/` y no aparece en la biblioteca hasta que la descarga ha terminado y la copia al destino se ha completado. El temporal de publicación dentro de NFS es oculto y no aparece en el listado normal.
 
-## Worker Futuro
+## Política de descarga
 
-El worker futuro descargará solo audio. La política inicial será priorizar una pista M4A directa y, si no existe, conservar el mejor audio disponible sin recodificar.
+El worker descarga solo audio. La política inicial prioriza una pista M4A directa y, si no existe, conserva el mejor audio disponible sin recodificar.
 
 Comportamiento previsto:
 
@@ -94,8 +99,9 @@ Comportamiento previsto:
 - Conserva el formato fuente si no hay M4A.
 - No recodifica por defecto.
 - Registra el formato real obtenido.
+- No configura postprocesadores de extracción o conversión.
 
-La compatibilidad de formatos de fallback con Audio Station se comprobará más adelante. No hay conversión de compatibilidad en esta fase.
+La compatibilidad de formatos de fallback con Audio Station se comprobará más adelante. No hay conversión de compatibilidad en esta fase y `transcode_applied` permanece en `false`.
 
 ## Estado actual
 

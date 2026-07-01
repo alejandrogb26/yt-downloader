@@ -2,7 +2,10 @@ from yt_downloader_api.db.models import DownloadJobStatus
 
 ALLOWED_TRANSITIONS = {
     DownloadJobStatus.QUEUED.value: {DownloadJobStatus.RUNNING.value},
-    DownloadJobStatus.RUNNING.value: {DownloadJobStatus.FAILED.value},
+    DownloadJobStatus.RUNNING.value: {
+        DownloadJobStatus.COMPLETED.value,
+        DownloadJobStatus.FAILED.value,
+    },
 }
 
 

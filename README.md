@@ -10,7 +10,7 @@
 - MariaDB: base de datos relacional para trabajos de descarga, eventos e historial.
 - Almacenamiento NFS: destino compartido para los archivos descargados.
 
-Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la creación segura de directorios, el renombrado seguro de ficheros/directorios, el movimiento de entradas dentro de un mismo perfil, el envío de entradas a papelera, la base ORM/Alembic, el registro de trabajos de descarga en cola, la consulta de trabajos/eventos y un worker mínimo para reclamar trabajos. No se incluye Docker, yt-dlp, FFmpeg, descargas reales, frontend, Caddy ni systemd.
+Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la creación segura de directorios, el renombrado seguro de ficheros/directorios, el movimiento de entradas dentro de un mismo perfil, el envío de entradas a papelera, la base ORM/Alembic, el registro de trabajos de descarga en cola, la consulta de trabajos/eventos y un worker one-shot que descarga una única pista de audio por ejecución. No se incluye Docker, frontend, Caddy, systemd, daemon permanente, cancelación ni reintentos automáticos.
 
 ## Perfiles de biblioteca
 
@@ -28,19 +28,21 @@ La API `POST /api/v1/profiles/{profile_id}/entries/move` permite mover ficheros 
 
 La API `DELETE /api/v1/profiles/{profile_id}/entries` no borra definitivamente. Mueve ficheros y directorios normales a una papelera interna `.trash` dentro de la raíz del perfil. Esa carpeta no se expone en los listados normales.
 
-La API `POST /api/v1/downloads` registra un trabajo de descarga en MariaDB con estado inicial `queued`, pero todavía no inicia ninguna descarga ni ejecuta procesos externos. También se pueden listar trabajos, consultar su detalle y ver sus eventos.
+La API `POST /api/v1/downloads` registra un trabajo de descarga en MariaDB con estado inicial `queued`, pero no descarga desde el proceso HTTP. También se pueden listar trabajos, consultar su detalle y ver sus eventos.
 
-El worker mínimo reclama como máximo un trabajo `queued`, lo marca como `running`, actualiza `worker_id`, `started_at`, `heartbeat_at` y sale sin descargar. Al arrancar también marca como `failed` los trabajos `running` cuyo heartbeat sea demasiado antiguo.
+El worker reclama como máximo un trabajo `queued`, lo marca como `running`, descarga una única pista de audio con la librería Python `yt-dlp`, publica el fichero final en la biblioteca y termina. Al arrancar también marca como `failed` los trabajos `running` cuyo heartbeat sea demasiado antiguo.
 
-Límites actuales: no hay borrado definitivo, vaciado de papelera, restauración, ejecución de descargas ni autenticación. El worker existente solo prepara la cola persistente y no ejecuta yt-dlp, FFmpeg ni subprocess.
+Límites actuales: no hay borrado definitivo, vaciado de papelera, restauración, autenticación, conversión MP3/FLAC, metadatos embebidos, carátulas, playlists ni postprocesado.
 
 ## Persistencia
 
 MariaDB será la persistencia para trabajos de descarga, eventos e historial. No sustituye al sistema de archivos: las bibliotecas y los archivos siguen viviendo en NFS bajo las rutas de cada perfil.
 
-La política inicial de descarga será solo audio, sin recodificación por defecto: se priorizará una pista M4A directa y, si no existe, se descargará el mejor audio disponible conservando el formato fuente. M4A es una preferencia de descarga, no una conversión forzada a M4A, MP3 o FLAC.
+La política inicial de descarga es solo audio, sin recodificación por defecto. El selector fijo de `yt-dlp` es `bestaudio[ext=m4a]/bestaudio`: se prioriza una pista M4A directa y, si no existe, se descarga el mejor audio disponible conservando el formato fuente. M4A es una preferencia de descarga, no una conversión forzada a M4A, MP3 o FLAC.
 
-MariaDB almacenará la política solicitada y, en el futuro, el formato técnico realmente obtenido: contenedor, códec, formato fuente y si se aplicó transcodificación. Inicialmente `transcode_applied` debe permanecer en `false`.
+MariaDB almacena la política solicitada y el formato técnico realmente obtenido: contenedor, códec, formato fuente y si se aplicó transcodificación. En esta versión `transcode_applied` permanece siempre en `false`.
+
+El worker descarga primero en staging local (`DOWNLOAD_STAGING_ROOT`, por defecto `/var/lib/yt-downloader/staging`) bajo un directorio único por trabajo. Solo cuando la descarga termina correctamente copia el fichero a un temporal oculto dentro del destino NFS y lo publica sin sobrescribir archivos existentes. El staging no debe estar dentro de ninguna biblioteca de perfil ni bajo `/mnt/music`.
 
 El esquema se aplica con Alembic. La API no crea tablas al arrancar y `GET /api/v1/health` funciona aunque `DATABASE_URL` no esté configurada.
 
@@ -50,6 +52,8 @@ Hay un ejemplo versionable en `config/profiles.example.json`. El fichero real `c
 
 - Python 3.14
 - `uv`
+
+`yt-dlp` se instala mediante las dependencias Python del proyecto. Para máxima compatibilidad con YouTube, el administrador puede necesitar `yt-dlp-ejs` y un runtime JavaScript compatible. `ffmpeg` y `ffprobe` no son necesarios para esta descarga directa sin conversión, aunque pueden ser necesarios en funciones futuras de postprocesado o compatibilidad.
 
 ## Comandos de desarrollo
 
@@ -86,13 +90,13 @@ Levantar la API en desarrollo:
 uv run --project backend uvicorn yt_downloader_api.main:app --host 127.0.0.1 --port 8080 --reload
 ```
 
-Ejecutar una pasada del worker mínimo:
+Ejecutar una pasada del worker one-shot:
 
 ```bash
 uv run --project backend python -m yt_downloader_api.worker.main
 ```
 
-El worker requiere `DATABASE_URL` y no aplica migraciones automáticamente. Para fijar un identificador estable se puede configurar `WORKER_ID`; si falta, se genera uno a partir del hostname.
+El worker requiere `DATABASE_URL`, `PROFILES_CONFIG_PATH` y acceso de escritura a `DOWNLOAD_STAGING_ROOT` y a la biblioteca destino. No aplica migraciones automáticamente. Para fijar un identificador estable se puede configurar `WORKER_ID`; si falta, se genera uno a partir del hostname.
 
 Levantar la API usando el ejemplo de perfiles local, sin modificar `/etc`:
 
@@ -165,6 +169,17 @@ Consultar trabajos y eventos:
 curl 'http://127.0.0.1:8080/api/v1/downloads?limit=25&offset=0'
 curl http://127.0.0.1:8080/api/v1/downloads/JOB_UUID
 curl 'http://127.0.0.1:8080/api/v1/downloads/JOB_UUID/events?limit=50&offset=0'
+```
+
+Secuencia manual de descarga:
+
+```bash
+uv run --project backend alembic -c backend/alembic.ini upgrade head
+uv run --project backend uvicorn yt_downloader_api.main:app --host 127.0.0.1 --port 8080
+curl -X POST http://127.0.0.1:8080/api/v1/downloads \
+  -H 'Content-Type: application/json' \
+  -d '{"profile_id":"pepe","source_url":"https://www.youtube.com/watch?v=VIDEO_ID","destination_path":"Rock/Clasicos"}'
+uv run --project backend python -m yt_downloader_api.worker.main
 ```
 
 ## Docker

@@ -25,12 +25,12 @@ Cada trabajo creado en estado `queued` genera también un evento inicial en `dow
 - `progress_percent`: progreso opcional.
 - `title`: título detectado opcional.
 - `output_relative_path`: salida final relativa opcional.
-- `source_format_id`: formato real seleccionado por yt-dlp.
-- `source_container`: contenedor de la fuente seleccionada.
-- `source_audio_codec`: códec de audio de la fuente seleccionada.
-- `output_container`: contenedor real del archivo final.
-- `output_audio_codec`: códec de audio real del archivo final.
-- `transcode_applied`: indica si se aplicó transcodificación. Inicialmente será `false`.
+- `source_format_id`: formato real seleccionado por `yt-dlp`.
+- `source_container`: contenedor de la fuente seleccionada por `yt-dlp`.
+- `source_audio_codec`: códec de audio de la fuente seleccionada por `yt-dlp`.
+- `output_container`: contenedor real del archivo final publicado en la biblioteca.
+- `output_audio_codec`: códec de audio real del archivo final publicado en la biblioteca.
+- `transcode_applied`: indica si se aplicó transcodificación. En esta primera versión será siempre `false`.
 - `error_code` y `error_message`: error opcional.
 - `worker_id`: worker que procesa el trabajo.
 - `attempt_count`: número de intentos.
@@ -40,12 +40,12 @@ Cada trabajo creado en estado `queued` genera también un evento inicial en `dow
 Estados del trabajo:
 
 - `queued`: creado por la API y pendiente de que un worker lo reclame.
-- `running`: reclamado por un worker. En esta fase no implica descarga real.
-- `completed`: reservado para descargas completadas en una fase futura.
+- `running`: reclamado por un worker y en descarga o publicación.
+- `completed`: descarga publicada correctamente en la biblioteca.
 - `failed`: terminó con error o fue recuperado como obsoleto.
 - `cancelled`: reservado para cancelaciones futuras.
 
-El worker reclama trabajos `queued` mediante MariaDB y los pasa a `running` con `worker_id`, `started_at` y `heartbeat_at`. Si al arrancar detecta trabajos `running` con `heartbeat_at` anterior al umbral configurado, o sin heartbeat y `updated_at` antiguo, los marca como `failed` con `error_code = worker_interrupted`.
+El worker reclama trabajos `queued` mediante MariaDB y los pasa a `running` con `worker_id`, `started_at` y `heartbeat_at`. Durante la descarga actualiza `progress_percent`, `heartbeat_at` y `updated_at` de forma limitada para evitar escrituras excesivas. Si al arrancar detecta trabajos `running` con `heartbeat_at` anterior al umbral configurado, o sin heartbeat y `updated_at` antiguo, los marca como `failed` con `error_code = worker_interrupted`.
 
 El índice `(status, heartbeat_at)` acelera la búsqueda de trabajos `running` obsoletos. El índice `(status, created_at)` se usa para reclamar trabajos `queued` en orden de creación.
 
@@ -59,7 +59,7 @@ La política inicial es:
 prefer_m4a_then_best_source
 ```
 
-La futura selección de yt-dlp será equivalente a:
+La selección de `yt-dlp` es fija y equivalente a:
 
 ```text
 bestaudio[ext=m4a]/bestaudio
@@ -67,7 +67,7 @@ bestaudio[ext=m4a]/bestaudio
 
 M4A es una preferencia de descarga directa, no una conversión forzada. Si existe M4A, el resultado esperado normalmente será M4A/AAC. Si no existe, se conservará el mejor audio disponible, por ejemplo WebM/Opus.
 
-Los campos técnicos de `download_jobs` registrarán el formato real obtenido. `transcode_applied` queda preparado para una posible conversión de compatibilidad futura, pero inicialmente será `false`.
+Los campos `source_*` registran la fuente real seleccionada por `yt-dlp`. Los campos `output_*` registran el archivo final publicado. Como no hay conversión en esta versión, normalmente coinciden con `source_*`, pero se almacenan separados para una futura fase de postprocesado. `transcode_applied` queda preparado para una posible conversión de compatibilidad futura, pero en esta versión será siempre `false`.
 
 `download_job_events` almacena eventos relevantes de cada trabajo:
 
@@ -79,6 +79,16 @@ Los campos técnicos de `download_jobs` registrarán el formato real obtenido. `
 - `progress_percent`: progreso opcional.
 
 Los listados de trabajos consultan historial persistido y no dependen de que el perfil siga existiendo o esté habilitado actualmente en `profiles.json`.
+
+Eventos principales de descarga:
+
+- `Download job queued.`: creado junto al trabajo inicial.
+- `Download job claimed by worker.`: creado al reclamar el trabajo.
+- `Download started.`: creado justo antes de ejecutar la descarga.
+- `Audio download finished. Moving file to library.`: creado antes de publicar el archivo en NFS.
+- `Download completed.`: creado en la misma transacción que marca el trabajo como `completed`, con `progress_percent = 100`.
+
+Las actualizaciones de porcentaje no crean eventos para evitar spam en `download_job_events`. Los errores controlados crean un evento `error` con un mensaje público genérico y seguro, sin stack traces, rutas absolutas ni credenciales.
 
 ## DATABASE_URL
 
