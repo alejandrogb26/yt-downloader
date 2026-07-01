@@ -10,7 +10,7 @@
 - MariaDB: base de datos relacional para trabajos de descarga, eventos e historial.
 - Almacenamiento NFS: destino compartido para los archivos descargados.
 
-Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la creación segura de directorios, el renombrado seguro de ficheros/directorios, el movimiento de entradas dentro de un mismo perfil, el envío de entradas a papelera, la base ORM/Alembic, el registro de trabajos de descarga en cola, la consulta de trabajos/eventos y un worker one-shot que descarga una única pista de audio por ejecución. No se incluye Docker, frontend, Caddy, systemd, daemon permanente, cancelación ni reintentos automáticos.
+Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la creación segura de directorios, el renombrado seguro de ficheros/directorios, el movimiento de entradas dentro de un mismo perfil, el envío de entradas a papelera, la base ORM/Alembic, el registro de trabajos de descarga en cola, la consulta de trabajos/eventos, un worker one-shot que descarga una única pista de audio por ejecución y un frontend React separado. No se incluye Docker, Caddy, HTTPS, systemd, daemon permanente, cancelación ni reintentos automáticos.
 
 ## Perfiles de biblioteca
 
@@ -52,6 +52,8 @@ Hay un ejemplo versionable en `config/profiles.example.json`. El fichero real `c
 
 - Python 3.14
 - `uv`
+- Node.js compatible con Vite
+- `npm`
 
 `yt-dlp` se instala mediante las dependencias Python del proyecto. Para máxima compatibilidad con YouTube, el administrador puede necesitar `yt-dlp-ejs` y un runtime JavaScript compatible. `ffmpeg` y `ffprobe` no son necesarios para esta descarga directa sin conversión, aunque pueden ser necesarios en funciones futuras de postprocesado o compatibilidad.
 
@@ -61,6 +63,7 @@ Instalar dependencias:
 
 ```bash
 uv sync --project backend
+npm install --prefix frontend
 ```
 
 Ejecutar pruebas:
@@ -89,6 +92,24 @@ Levantar la API en desarrollo:
 ```bash
 uv run --project backend uvicorn yt_downloader_api.main:app --host 127.0.0.1 --port 8080 --reload
 ```
+
+Levantar el frontend React/Vite en desarrollo:
+
+```bash
+npm run dev --prefix frontend
+```
+
+En desarrollo, Vite reenvía `/api` a `http://127.0.0.1:8080`, evitando CORS sin modificar FastAPI. En producción se espera publicar el build estático del frontend y la API bajo el mismo origen mediante Caddy, pendiente de implementar.
+
+Ejecutar verificaciones frontend:
+
+```bash
+npm run test:run --prefix frontend
+npm run lint --prefix frontend
+npm run build --prefix frontend
+```
+
+El build del frontend queda en `frontend/dist/` y será servido por Caddy en un bloque posterior.
 
 Ejecutar una pasada del worker one-shot:
 

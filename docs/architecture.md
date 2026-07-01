@@ -4,12 +4,26 @@
 
 ## Componentes previstos
 
-- Frontend: aplicación web separada para gestionar descargas y consultar estados. No implementado todavía.
+- Frontend: aplicación React/Vite separada para seleccionar perfiles, navegar la biblioteca en modo solo lectura, elegir destino, crear trabajos y consultar estados.
 - Backend: API FastAPI con Pydantic v2. Actualmente incluye configuración base, `GET /api/v1/health`, `GET /api/v1/profiles`, navegación con `GET /api/v1/profiles/{profile_id}/entries`, creación de directorios con `POST /api/v1/profiles/{profile_id}/directories`, renombrado con `PATCH /api/v1/profiles/{profile_id}/entries/rename`, movimiento con `POST /api/v1/profiles/{profile_id}/entries/move`, envío a papelera con `DELETE /api/v1/profiles/{profile_id}/entries` y endpoints para crear y consultar trabajos de descarga.
 - Worker de descargas: proceso independiente one-shot para reclamar un trabajo de MariaDB, descargar una pista de audio con `yt-dlp`, publicar el resultado en NFS y finalizar el estado.
 - MariaDB: base de datos para trabajos de descarga, eventos, estados e historial. La capa ORM y las migraciones iniciales ya están preparadas.
 - Almacenamiento NFS: ubicación compartida para archivos descargados. No implementado todavía.
-- Infraestructura: configuración futura para servicios del sistema y proxy. No implementada todavía.
+- Infraestructura: configuración futura para Caddy, HTTPS y servicios del sistema. No implementada todavía.
+
+## Flujo web
+
+```text
+Navegador
+  ↓
+Frontend React/Vite
+  ↓ /api/v1
+FastAPI
+  ↓
+MariaDB / worker / NFS
+```
+
+En desarrollo, Vite usa un proxy para reenviar `/api` a `http://127.0.0.1:8080`. La API no configura CORS en esta fase. En producción se espera servir el frontend estático y la API bajo el mismo origen mediante Caddy. Caddy y HTTPS siguen pendientes de implementación.
 
 ## Perfiles de biblioteca
 
@@ -105,6 +119,6 @@ La compatibilidad de formatos de fallback con Audio Station se comprobará más 
 
 ## Estado actual
 
-La parte funcional actual es el backend en `backend`, ejecutable con Uvicorn en `127.0.0.1:8080`.
+La parte funcional actual incluye el backend en `backend`, ejecutable con Uvicorn en `127.0.0.1:8080`, y el frontend React/Vite en `frontend`, ejecutable en desarrollo con `npm run dev`.
 
 No hay Dockerfiles ni `docker-compose` en este bloque.

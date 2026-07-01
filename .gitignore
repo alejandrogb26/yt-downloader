@@ -160,6 +160,11 @@ venv.bak/
 # Local yt-downloader configuration
 config/profiles.json
 
+# Frontend local artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+
 # Spyder project settings
 .spyderproject
 .spyproject
