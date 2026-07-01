@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     database_pool_size: int = 5
     database_max_overflow: int = 5
     database_pool_recycle_seconds: int = 1800
+    worker_id: str | None = None
+    worker_stale_job_timeout_seconds: int = 900
 
     model_config = SettingsConfigDict(
         env_file=".env",

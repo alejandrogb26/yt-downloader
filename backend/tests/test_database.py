@@ -88,6 +88,7 @@ def test_download_jobs_columns_and_indexes() -> None:
         "attempt_count",
         "created_at",
         "updated_at",
+        "heartbeat_at",
         "started_at",
         "finished_at",
     }
@@ -103,6 +104,7 @@ def test_download_jobs_columns_and_indexes() -> None:
     assert {index.name for index in table.indexes} >= {
         "ix_download_jobs_status_created_at",
         "ix_download_jobs_profile_id_created_at",
+        "ix_download_jobs_status_heartbeat_at",
     }
 
 

@@ -10,7 +10,7 @@
 - MariaDB: base de datos relacional para trabajos de descarga, eventos e historial.
 - Almacenamiento NFS: destino compartido para los archivos descargados.
 
-Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la creación segura de directorios, el renombrado seguro de ficheros/directorios, el movimiento de entradas dentro de un mismo perfil, el envío de entradas a papelera, la base ORM/Alembic, el registro de trabajos de descarga en cola y la consulta de trabajos/eventos. No se incluye Docker, workers, yt-dlp, frontend, Caddy ni systemd.
+Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la creación segura de directorios, el renombrado seguro de ficheros/directorios, el movimiento de entradas dentro de un mismo perfil, el envío de entradas a papelera, la base ORM/Alembic, el registro de trabajos de descarga en cola, la consulta de trabajos/eventos y un worker mínimo para reclamar trabajos. No se incluye Docker, yt-dlp, FFmpeg, descargas reales, frontend, Caddy ni systemd.
 
 ## Perfiles de biblioteca
 
@@ -30,7 +30,9 @@ La API `DELETE /api/v1/profiles/{profile_id}/entries` no borra definitivamente. 
 
 La API `POST /api/v1/downloads` registra un trabajo de descarga en MariaDB con estado inicial `queued`, pero todavía no inicia ninguna descarga ni ejecuta procesos externos. También se pueden listar trabajos, consultar su detalle y ver sus eventos.
 
-Límites actuales: no hay borrado definitivo, vaciado de papelera, restauración, ejecución de descargas, worker ni autenticación.
+El worker mínimo reclama como máximo un trabajo `queued`, lo marca como `running`, actualiza `worker_id`, `started_at`, `heartbeat_at` y sale sin descargar. Al arrancar también marca como `failed` los trabajos `running` cuyo heartbeat sea demasiado antiguo.
+
+Límites actuales: no hay borrado definitivo, vaciado de papelera, restauración, ejecución de descargas ni autenticación. El worker existente solo prepara la cola persistente y no ejecuta yt-dlp, FFmpeg ni subprocess.
 
 ## Persistencia
 
@@ -83,6 +85,14 @@ Levantar la API en desarrollo:
 ```bash
 uv run --project backend uvicorn yt_downloader_api.main:app --host 127.0.0.1 --port 8080 --reload
 ```
+
+Ejecutar una pasada del worker mínimo:
+
+```bash
+uv run --project backend python -m yt_downloader_api.worker.main
+```
+
+El worker requiere `DATABASE_URL` y no aplica migraciones automáticamente. Para fijar un identificador estable se puede configurar `WORKER_ID`; si falta, se genera uno a partir del hostname.
 
 Levantar la API usando el ejemplo de perfiles local, sin modificar `/etc`:
 

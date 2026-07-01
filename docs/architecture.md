@@ -5,8 +5,8 @@
 ## Componentes previstos
 
 - Frontend: aplicación web separada para gestionar descargas y consultar estados. No implementado todavía.
-- Backend: API FastAPI con Pydantic v2. Actualmente incluye configuración base, `GET /api/v1/health`, `GET /api/v1/profiles`, navegación con `GET /api/v1/profiles/{profile_id}/entries`, creación de directorios con `POST /api/v1/profiles/{profile_id}/directories`, renombrado con `PATCH /api/v1/profiles/{profile_id}/entries/rename`, movimiento con `POST /api/v1/profiles/{profile_id}/entries/move` y envío a papelera con `DELETE /api/v1/profiles/{profile_id}/entries`.
-- Worker de descargas: proceso independiente para ejecutar descargas con yt-dlp. No implementado todavía.
+- Backend: API FastAPI con Pydantic v2. Actualmente incluye configuración base, `GET /api/v1/health`, `GET /api/v1/profiles`, navegación con `GET /api/v1/profiles/{profile_id}/entries`, creación de directorios con `POST /api/v1/profiles/{profile_id}/directories`, renombrado con `PATCH /api/v1/profiles/{profile_id}/entries/rename`, movimiento con `POST /api/v1/profiles/{profile_id}/entries/move`, envío a papelera con `DELETE /api/v1/profiles/{profile_id}/entries` y endpoints para crear y consultar trabajos de descarga.
+- Worker de descargas: proceso independiente mínimo para reclamar trabajos de MariaDB y detectar trabajos obsoletos. Todavía no ejecuta yt-dlp ni FFmpeg.
 - MariaDB: base de datos para trabajos de descarga, eventos, estados e historial. La capa ORM y las migraciones iniciales ya están preparadas.
 - Almacenamiento NFS: ubicación compartida para archivos descargados. No implementado todavía.
 - Infraestructura: configuración futura para servicios del sistema y proxy. No implementada todavía.
@@ -39,17 +39,17 @@ El movimiento de ficheros y directorios se limita a la misma biblioteca del perf
 
 La eliminación actual no borra definitivamente. Mueve la entrada a `.trash` dentro de la raíz del perfil, usando un nombre interno único. La API no devuelve la ubicación interna en papelera y `.trash` no aparece en los listados normales porque las entradas ocultas no se exponen.
 
-El sistema de archivos NFS será la fuente de verdad de las bibliotecas. Todavía no hay borrado definitivo, vaciado de papelera, restauración, descargas con yt-dlp ni worker.
+El sistema de archivos NFS será la fuente de verdad de las bibliotecas. Todavía no hay borrado definitivo, vaciado de papelera, restauración ni descargas con yt-dlp.
 
 ## Persistencia y flujo futuro
 
-La API FastAPI usará MariaDB para registrar trabajos de descarga y consultar sus eventos. El worker futuro también usará MariaDB para tomar trabajos, actualizar estado y registrar progreso.
+La API FastAPI usa MariaDB para registrar trabajos de descarga y consultar sus eventos. El worker mínimo también usa MariaDB para tomar trabajos y actualizar estado.
 
 Flujo previsto:
 
 ```text
-FastAPI API -> MariaDB
-Worker futuro -> MariaDB
+FastAPI API -> MariaDB -> queued jobs
+Worker -> MariaDB -> claims queued job -> running
 Worker futuro -> staging local -> NFS
 ```
 
@@ -72,6 +72,16 @@ Cliente -> FastAPI -> MariaDB
 ```
 
 La API solo registra el trabajo en cola. No ejecuta yt-dlp, FFmpeg ni procesos externos.
+
+Flujo actual del worker mínimo:
+
+```text
+Worker -> MariaDB -> marca running obsoletos como failed
+Worker -> MariaDB -> reclama como máximo un queued -> running
+Worker -> sale sin descargar
+```
+
+El worker actualiza `heartbeat_at` al reclamar el trabajo. En esta fase el trabajo queda en `running` intencionadamente para validar la cola persistente antes de añadir ejecución real de descargas.
 
 ## Worker Futuro
 

@@ -34,15 +34,20 @@ Cada trabajo creado en estado `queued` genera también un evento inicial en `dow
 - `error_code` y `error_message`: error opcional.
 - `worker_id`: worker que procesa el trabajo.
 - `attempt_count`: número de intentos.
+- `heartbeat_at`: última señal UTC del worker que tiene reclamado el trabajo.
 - `created_at`, `updated_at`, `started_at`, `finished_at`: fechas UTC.
 
-Estados iniciales:
+Estados del trabajo:
 
-- `queued`
-- `running`
-- `completed`
-- `failed`
-- `cancelled`
+- `queued`: creado por la API y pendiente de que un worker lo reclame.
+- `running`: reclamado por un worker. En esta fase no implica descarga real.
+- `completed`: reservado para descargas completadas en una fase futura.
+- `failed`: terminó con error o fue recuperado como obsoleto.
+- `cancelled`: reservado para cancelaciones futuras.
+
+El worker reclama trabajos `queued` mediante MariaDB y los pasa a `running` con `worker_id`, `started_at` y `heartbeat_at`. Si al arrancar detecta trabajos `running` con `heartbeat_at` anterior al umbral configurado, o sin heartbeat y `updated_at` antiguo, los marca como `failed` con `error_code = worker_interrupted`.
+
+El índice `(status, heartbeat_at)` acelera la búsqueda de trabajos `running` obsoletos. El índice `(status, created_at)` se usa para reclamar trabajos `queued` en orden de creación.
 
 ## Política de Audio
 

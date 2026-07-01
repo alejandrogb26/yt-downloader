@@ -94,9 +94,15 @@ class DownloadJob(Base):
         onupdate=utc_now,
     )
     started_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
     finished_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
 
     events: Mapped[list[DownloadJobEvent]] = relationship(
         back_populates="job",
         cascade="all, delete-orphan",
     )
+
+
+Index(
+    "ix_download_jobs_status_heartbeat_at", DownloadJob.status, DownloadJob.heartbeat_at
+)
