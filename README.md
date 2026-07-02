@@ -21,7 +21,7 @@ systemd timer -> worker one-shot -> staging local -> NFS
 FastAPI / worker -> MariaDB externa
 ```
 
-FastAPI escucha solo en `127.0.0.1:8080`; Caddy es el único servicio previsto en `443`. La plantilla usa CA interna de Caddy y está pensada para una LAN de confianza. No expongas el servicio a Internet mientras no exista autenticación y una política de seguridad completa.
+FastAPI escucha solo en `127.0.0.1:8080`; Caddy es el único servicio previsto en `443`. La plantilla usa un certificado TLS ya entregado en el CT para `music.alejandrogb.local` y está pensada para una LAN de confianza. El DNS interno debe resolver `music.alejandrogb.local` a la IP del CT y los clientes deben confiar en la CA emisora del certificado. No expongas el servicio a Internet mientras no exista autenticación y una política de seguridad completa.
 
 ## Perfiles de biblioteca
 
@@ -110,7 +110,7 @@ Levantar el frontend React/Vite en desarrollo:
 npm run dev --prefix frontend
 ```
 
-En desarrollo, Vite reenvía `/api` a `http://127.0.0.1:8080`, evitando CORS sin modificar FastAPI. En producción se espera publicar el build estático del frontend y la API bajo el mismo origen mediante Caddy, pendiente de implementar.
+En desarrollo, Vite reenvía `/api` a `http://127.0.0.1:8080`, evitando CORS sin modificar FastAPI. En producción se espera publicar el build estático del frontend y la API bajo el mismo origen mediante Caddy; las plantillas de despliegue están en `infra/`.
 
 Ejecutar verificaciones frontend:
 
@@ -120,7 +120,7 @@ npm run lint --prefix frontend
 npm run build --prefix frontend
 ```
 
-El build del frontend queda en `frontend/dist/` y será servido por Caddy en un bloque posterior.
+El build del frontend queda en `frontend/dist/` y puede servirse con Caddy usando las plantillas de `infra/`.
 
 Ejecutar una pasada del worker one-shot:
 

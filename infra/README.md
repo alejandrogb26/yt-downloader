@@ -16,7 +16,9 @@ Caddy
 systemd timer → worker one-shot → staging local → NFS
 ```
 
-FastAPI escucha solo en `127.0.0.1:8080`. Caddy es el único servicio previsto escuchando en `443`. La configuración usa `tls internal`, por lo que los clientes deben confiar en la CA interna de Caddy para evitar advertencias HTTPS.
+FastAPI escucha solo en `127.0.0.1:8080`. Caddy es el único servicio previsto escuchando en `443`. La configuración carga un certificado TLS y una clave privada ya entregados manualmente al CT para `music.alejandrogb.local`.
+
+El DNS interno debe resolver `music.alejandrogb.local` a la IP del CT. El certificado debe tener `music.alejandrogb.local` como nombre válido. Los clientes deben confiar en la CA emisora del certificado entregado.
 
 No hay autenticación todavía. Limita este servicio a una LAN de confianza mediante firewall y no expongas `443` a Internet.
 
@@ -29,6 +31,8 @@ No hay autenticación todavía. Limita este servicio a una LAN de confianza medi
 - Configuración privada: `/etc/yt-downloader`
 - Perfiles: `/etc/yt-downloader/profiles.json`
 - Variables de entorno: `/etc/yt-downloader/yt-downloader.env`
+- Certificado TLS: `/etc/ssl/yt-downloader/music.alejandrogb.local.crt`
+- Clave privada TLS: `/etc/ssl/yt-downloader/music.alejandrogb.local.key`
 - Staging local: `/var/lib/yt-downloader/staging`
 - Bibliotecas NFS: `/mnt/music`
 
@@ -45,7 +49,17 @@ Permisos esperados:
 - `yt-downloader` puede leer `/etc/yt-downloader/yt-downloader.env`.
 - `yt-downloader` puede escribir en `/var/lib/yt-downloader/staging`.
 - `yt-downloader` tiene permisos NFS reales sobre las rutas configuradas para perfiles.
+- `yt-downloader` no necesita acceso al certificado ni a la clave privada TLS.
 - `caddy` solo necesita lectura de `/var/www/yt-downloader`.
+- El usuario del servicio Caddy debe poder leer `/etc/ssl/yt-downloader/music.alejandrogb.local.key`.
+
+Permisos recomendados para el certificado entregado:
+
+- Directorio `/etc/ssl/yt-downloader`: propietario `root`, grupo `caddy`, modo `0750`.
+- Certificado `/etc/ssl/yt-downloader/music.alejandrogb.local.crt`: propietario `root`, grupo `caddy`, modo `0644`.
+- Clave privada `/etc/ssl/yt-downloader/music.alejandrogb.local.key`: propietario `root`, grupo `caddy`, modo `0640`.
+
+No presupongas UID o GID fijos. La clave privada no debe versionarse ni copiarse al repositorio.
 
 ## Entorno
 
@@ -112,7 +126,15 @@ El usuario `caddy` debe poder leer `/var/www/yt-downloader`.
 
 Plantilla: `infra/caddy/Caddyfile.internal.example`.
 
-La configuración sirve `/var/www/yt-downloader`, soporta rutas SPA con fallback a `/index.html`, y reenvía solo `/api/*` a `127.0.0.1:8080`. Conserva el prefijo `/api` porque usa `handle`, no `handle_path`. No expone `/docs` ni `/openapi.json` salvo que existan bajo `/api/*`.
+La configuración sirve `/var/www/yt-downloader`, soporta rutas SPA con fallback a `/index.html`, y reenvía solo `/api/*` a `127.0.0.1:8080` sin reescribir la ruta. No incluye reglas especiales para `/docs` ni `/openapi.json`.
+
+Instalar certificado y clave ya entregados:
+
+```bash
+sudo install -d -m 0750 -o root -g caddy /etc/ssl/yt-downloader
+sudo install -m 0644 -o root -g caddy /ruta/al/certificado.crt /etc/ssl/yt-downloader/music.alejandrogb.local.crt
+sudo install -m 0640 -o root -g caddy /ruta/a/la-clave.key /etc/ssl/yt-downloader/music.alejandrogb.local.key
+```
 
 Instalar y validar:
 
@@ -122,7 +144,14 @@ sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 sudo systemctl enable --now caddy
 ```
 
-Esta configuración es para red interna con CA interna de Caddy. Instala la CA interna en los clientes antes de usarlo normalmente. `curl -k` solo es válido como prueba temporal.
+Tras renovar o sustituir el certificado o la clave privada, valida la configuración y recarga Caddy:
+
+```bash
+sudo install -m 0644 -o root -g caddy /ruta/al/certificado-nuevo.crt /etc/ssl/yt-downloader/music.alejandrogb.local.crt
+sudo install -m 0640 -o root -g caddy /ruta/a/la-clave-nueva.key /etc/ssl/yt-downloader/music.alejandrogb.local.key
+sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo systemctl reload caddy
+```
 
 ## systemd
 
@@ -149,10 +178,10 @@ systemctl status yt-downloader-worker.timer
 systemctl list-timers yt-downloader-worker.timer
 journalctl -u yt-downloader-api.service -f
 journalctl -u yt-downloader-worker.service -f
-curl -k https://music.example.internal/api/v1/health
+curl https://music.alejandrogb.local/api/v1/health
 ```
 
-`-k` solo es una prueba temporal antes de instalar la CA interna de Caddy en los clientes.
+El comando anterior debe funcionar sin desactivar la validación TLS si el DNS interno resuelve `music.alejandrogb.local` hacia el CT y el cliente confía en la CA emisora del certificado.
 
 ## Rollback
 

@@ -9,7 +9,7 @@
 - Worker de descargas: proceso independiente one-shot para reclamar un trabajo de MariaDB, descargar una pista de audio con `yt-dlp`, publicar el resultado en NFS y finalizar el estado.
 - MariaDB: base de datos para trabajos de descarga, eventos, estados e historial. La capa ORM y las migraciones iniciales ya están preparadas.
 - Almacenamiento NFS: ubicación compartida para archivos descargados. No implementado todavía.
-- Infraestructura: configuración futura para Caddy, HTTPS y servicios del sistema. No implementada todavía.
+- Infraestructura: plantillas para Caddy, HTTPS con certificado manual y servicios systemd en `infra/`.
 
 ## Flujo web
 
@@ -23,7 +23,7 @@ FastAPI
 MariaDB / worker / NFS
 ```
 
-En desarrollo, Vite usa un proxy para reenviar `/api` a `http://127.0.0.1:8080`. La API no configura CORS en esta fase. En producción se espera servir el frontend estático y la API bajo el mismo origen mediante Caddy. Caddy y HTTPS siguen pendientes de implementación.
+En desarrollo, Vite usa un proxy para reenviar `/api` a `http://127.0.0.1:8080`. La API no configura CORS en esta fase. En producción se espera servir el frontend estático y la API bajo el mismo origen mediante Caddy. Las plantillas de Caddy, HTTPS y systemd están en `infra/`.
 
 ## Topología de despliegue prevista
 
@@ -39,7 +39,9 @@ Caddy
 systemd timer → worker one-shot → staging local → NFS
 ```
 
-FastAPI no queda accesible desde la red: escucha en `127.0.0.1:8080`. Caddy es el único servicio previsto escuchando en `443`, sirve el build estático y reenvía únicamente `/api/*` conservando el prefijo `/api`. La configuración inicial usa la CA interna de Caddy (`tls internal`) para una red interna. Caddy, HTTPS interno y systemd están documentados como plantillas en `infra/`, pero deben instalarse manualmente en el CT.
+FastAPI no queda accesible desde la red: escucha en `127.0.0.1:8080`. Caddy es el único servicio previsto escuchando en `443`, sirve el build estático y reenvía únicamente `/api/*` conservando el prefijo `/api`. La configuración carga un certificado TLS y una clave privada ya entregados manualmente al CT para `music.alejandrogb.local`. Caddy, HTTPS y systemd están documentados como plantillas en `infra/`, pero deben instalarse manualmente en el CT.
+
+El DNS interno debe resolver `music.alejandrogb.local` a la IP del CT, el certificado debe tener ese nombre como válido y los clientes deben confiar en la CA emisora. La clave privada no debe versionarse ni copiarse al repositorio.
 
 No hay autenticación todavía. Antes de exponer el servicio fuera de una LAN de confianza harán falta autenticación, revisión de firewall, política TLS pública si procede y endurecimiento operativo adicional.
 

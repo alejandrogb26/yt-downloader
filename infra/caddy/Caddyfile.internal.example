@@ -1,5 +1,5 @@
-music.example.internal {
-    tls internal
+music.alejandrogb.local {
+    tls /etc/ssl/yt-downloader/music.alejandrogb.local.crt /etc/ssl/yt-downloader/music.alejandrogb.local.key
 
     encode zstd gzip
 
