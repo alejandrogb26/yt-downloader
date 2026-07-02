@@ -1,6 +1,8 @@
 # Frontend
 
-Frontend separado de `yt-downloader`, implementado con React, TypeScript y Vite. Permite seleccionar un perfil, navegar la biblioteca en modo solo lectura, elegir una carpeta destino, crear trabajos de descarga y consultar trabajos recientes.
+Frontend separado de `yt-downloader`, implementado con React, TypeScript y Vite. Permite seleccionar un perfil, navegar la biblioteca, elegir una carpeta destino, crear trabajos de descarga, consultar trabajos recientes, crear carpetas, renombrar entradas, mover entradas y enviar entradas a papelera.
+
+El movimiento solo funciona dentro del mismo perfil, conserva el nombre original y no permite mover una carpeta dentro de sí misma. La operación de enviar a papelera no borra definitivamente: mueve la entrada a la papelera interna del perfil. Restaurar desde papelera y vaciar papelera siguen pendientes.
 
 ## Requisitos
 

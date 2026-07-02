@@ -68,6 +68,8 @@ const downloadsResponse = {
   offset: 0,
 };
 
+type FetchSpy = ReturnType<typeof mockApi>;
+
 describe("frontend", () => {
   test("redirige desde la raíz a descargas", async () => {
     mockApi();
@@ -101,6 +103,216 @@ describe("frontend", () => {
     await user.click(screen.getByRole("button", { name: "Seleccionar esta carpeta" }));
     expect(await screen.findByText("Destino:")).toBeInTheDocument();
     expect(screen.getAllByText("/Rock").length).toBeGreaterThan(0);
+  });
+
+  test("renderiza botón Crear carpeta", async () => {
+    mockApi();
+    renderApp(["/library?profile=pepe"]);
+
+    expect(await screen.findByRole("button", { name: "Crear carpeta" })).toBeInTheDocument();
+  });
+
+  test("crea carpeta en raíz con payload correcto y recarga listado", async () => {
+    const fetchMock = mockApi();
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await user.click(await screen.findByRole("button", { name: "Crear carpeta" }));
+    await user.type(screen.getByLabelText("Nombre de la carpeta"), "Jazz");
+    await user.click(screen.getByRole("button", { name: "Crear" }));
+
+    expect(await screen.findByText("Carpeta creada correctamente.")).toBeInTheDocument();
+    const postCall = findFetchCall(fetchMock, "/api/v1/profiles/pepe/directories", "POST");
+    expect(JSON.parse(String(postCall?.[1]?.body))).toEqual({ parent_path: "", name: "Jazz" });
+    expect(countFetchCalls(fetchMock, "/api/v1/profiles/pepe/entries?path=")).toBeGreaterThan(1);
+  });
+
+  test("crea carpeta dentro de subdirectorio con parent_path correcto", async () => {
+    const fetchMock = mockApi();
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await user.click(await screen.findByRole("button", { name: /Rock/ }));
+    await screen.findByText("/Rock/Clasicos");
+    await user.click(screen.getByRole("button", { name: "Crear carpeta" }));
+    await user.type(screen.getByLabelText("Nombre de la carpeta"), "Directos");
+    await user.click(screen.getByRole("button", { name: "Crear" }));
+
+    const postCall = findFetchCall(fetchMock, "/api/v1/profiles/pepe/directories", "POST");
+    expect(JSON.parse(String(postCall?.[1]?.body))).toEqual({ parent_path: "Rock", name: "Directos" });
+  });
+
+  test("muestra error seguro al fallar creación", async () => {
+    mockApi({ createDirectoryStatus: 409, createDirectoryBody: { detail: "An entry with this name already exists." } });
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await user.click(await screen.findByRole("button", { name: "Crear carpeta" }));
+    await user.type(screen.getByLabelText("Nombre de la carpeta"), "Rock");
+    await user.click(screen.getByRole("button", { name: "Crear" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("An entry with this name already exists.");
+  });
+
+  test("renombra una entrada con path y new_name correctos", async () => {
+    const fetchMock = mockApi();
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await screen.findByText("/Rock");
+    await user.click(screen.getAllByRole("button", { name: "Renombrar" })[0]);
+    expect(screen.getByRole("form", { name: "Renombrar Rock" })).toBeInTheDocument();
+    await user.clear(screen.getByLabelText("Nuevo nombre"));
+    await user.type(screen.getByLabelText("Nuevo nombre"), "Rock Clasico");
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+
+    expect(await screen.findByText("Entrada renombrada correctamente.")).toBeInTheDocument();
+    const patchCall = findFetchCall(fetchMock, "/api/v1/profiles/pepe/entries/rename", "PATCH");
+    expect(JSON.parse(String(patchCall?.[1]?.body))).toEqual({ path: "Rock", new_name: "Rock Clasico" });
+  });
+
+  test("muestra error seguro al fallar renombrado", async () => {
+    mockApi({ renameStatus: 422, renameBody: { detail: "Invalid entry name." } });
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await screen.findByText("/Rock");
+    await user.click(screen.getAllByRole("button", { name: "Renombrar" })[0]);
+    await user.clear(screen.getByLabelText("Nuevo nombre"));
+    await user.type(screen.getByLabelText("Nuevo nombre"), "Nombre");
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Invalid entry name.");
+  });
+
+  test("pide confirmación antes de enviar a papelera y cancela sin llamar API", async () => {
+    const fetchMock = mockApi();
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await screen.findByText("/Rock");
+    await user.click(screen.getAllByRole("button", { name: "Enviar a papelera" })[0]);
+
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("papelera interna"));
+    expect(findFetchCall(fetchMock, "/api/v1/profiles/pepe/entries", "DELETE")).toBeUndefined();
+  });
+
+  test("envía path correcto a papelera al confirmar y recarga listado", async () => {
+    const fetchMock = mockApi();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await screen.findByText("/Rock");
+    await user.click(screen.getAllByRole("button", { name: "Enviar a papelera" })[1]);
+
+    expect(await screen.findByText("Entrada enviada a la papelera correctamente.")).toBeInTheDocument();
+    const deleteCall = findFetchCall(fetchMock, "/api/v1/profiles/pepe/entries", "DELETE");
+    expect(JSON.parse(String(deleteCall?.[1]?.body))).toEqual({ path: "tema.mp3" });
+    expect(countFetchCalls(fetchMock, "/api/v1/profiles/pepe/entries?path=")).toBeGreaterThan(1);
+  });
+
+  test("renderiza acción Mover y abre el diálogo en la raíz", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await screen.findByText("/Rock");
+    expect(screen.getAllByRole("button", { name: "Mover" }).length).toBeGreaterThan(0);
+    await user.click(screen.getAllByRole("button", { name: "Mover" })[1]);
+
+    const dialog = await screen.findByRole("dialog", { name: "Mover entrada" });
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByText("Destino actual:")).toBeInTheDocument();
+    expect(within(dialog).getByText("/Rock")).toBeInTheDocument();
+    expect(within(dialog).queryByText("tema.mp3")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/root_path|\/mnt\/music/)).not.toBeInTheDocument();
+  });
+
+  test("selecciona raíz como destino y envía cadena vacía", async () => {
+    const fetchMock = mockApi();
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await user.click(await screen.findByRole("button", { name: /Rock/ }));
+    await screen.findByText("/Rock/Clasicos");
+    await user.click(screen.getAllByRole("button", { name: "Mover" })[0]);
+    await user.click(screen.getByRole("button", { name: "Mover aquí" }));
+
+    expect(await screen.findByText("Entrada movida correctamente.")).toBeInTheDocument();
+    const moveCall = findFetchCall(fetchMock, "/api/v1/profiles/pepe/entries/move", "POST");
+    expect(JSON.parse(String(moveCall?.[1]?.body))).toEqual({
+      source_path: "Rock/Clasicos",
+      target_directory_path: "",
+    });
+    expect(countFetchCalls(fetchMock, "/api/v1/profiles/pepe/entries?path=Rock")).toBeGreaterThan(1);
+  });
+
+  test("selecciona un subdirectorio y envía target_directory_path correcto", async () => {
+    const fetchMock = mockApi();
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await screen.findByText("/Rock");
+    await user.click(screen.getAllByRole("button", { name: "Mover" })[1]);
+    await user.click(within(screen.getByRole("dialog", { name: "Mover entrada" })).getByRole("button", { name: /Rock/ }));
+    await user.click(screen.getByRole("button", { name: "Mover aquí" }));
+
+    const moveCall = findFetchCall(fetchMock, "/api/v1/profiles/pepe/entries/move", "POST");
+    expect(JSON.parse(String(moveCall?.[1]?.body))).toEqual({
+      source_path: "tema.mp3",
+      target_directory_path: "Rock",
+    });
+  });
+
+  test("cierra el diálogo con Cancelar sin llamar al endpoint de movimiento", async () => {
+    const fetchMock = mockApi();
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await screen.findByText("/Rock");
+    await user.click(screen.getAllByRole("button", { name: "Mover" })[1]);
+    await user.click(screen.getByRole("button", { name: "Cancelar" }));
+
+    expect(screen.queryByRole("dialog", { name: "Mover entrada" })).not.toBeInTheDocument();
+    expect(findFetchCall(fetchMock, "/api/v1/profiles/pepe/entries/move", "POST")).toBeUndefined();
+  });
+
+  test("deshabilita confirmación cuando el destino es la carpeta padre actual", async () => {
+    const user = userEvent.setup();
+    mockApi();
+    renderApp(["/library?profile=pepe"]);
+
+    await screen.findByText("/Rock");
+    await user.click(screen.getAllByRole("button", { name: "Mover" })[1]);
+
+    expect(screen.getByText("La entrada ya se encuentra en esta carpeta.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Mover aquí" })).toBeDisabled();
+  });
+
+  test("impide seleccionar una carpeta dentro de sí misma", async () => {
+    const user = userEvent.setup();
+    mockApi();
+    renderApp(["/library?profile=pepe"]);
+
+    await screen.findByText("/Rock");
+    await user.click(screen.getAllByRole("button", { name: "Mover" })[0]);
+
+    expect(within(screen.getByRole("dialog", { name: "Mover entrada" })).getByRole("button", { name: /Rock/ })).toBeDisabled();
+  });
+
+  test("muestra error seguro de API al fallar movimiento", async () => {
+    mockApi({ moveStatus: 409, moveBody: { detail: "An entry with this name already exists." } });
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await screen.findByText("/Rock");
+    await user.click(screen.getAllByRole("button", { name: "Mover" })[1]);
+    await user.click(within(screen.getByRole("dialog", { name: "Mover entrada" })).getByRole("button", { name: /Rock/ }));
+    await user.click(screen.getByRole("button", { name: "Mover aquí" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("An entry with this name already exists.");
   });
 
   test("envía formulario con profile_id, source_url y destination_path correctos", async () => {
@@ -183,7 +395,18 @@ function renderApp(initialEntries: string[]) {
   );
 }
 
-function mockApi(options: { createDownloadStatus?: number; createDownloadBody?: unknown } = {}) {
+function mockApi(
+  options: {
+    createDownloadStatus?: number;
+    createDownloadBody?: unknown;
+    createDirectoryStatus?: number;
+    createDirectoryBody?: unknown;
+    renameStatus?: number;
+    renameBody?: unknown;
+    moveStatus?: number;
+    moveBody?: unknown;
+  } = {},
+) {
   const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
     if (url.includes("/profiles/pepe/entries?path=Rock")) {
@@ -194,6 +417,27 @@ function mockApi(options: { createDownloadStatus?: number; createDownloadBody?: 
     }
     if (url.endsWith("/profiles")) {
       return jsonResponse(profilesResponse);
+    }
+    if (url.endsWith("/profiles/pepe/directories") && init?.method === "POST") {
+      return jsonResponse(
+        options.createDirectoryBody ?? { name: "Jazz", path: "Jazz", type: "directory" },
+        options.createDirectoryStatus ?? 201,
+      );
+    }
+    if (url.endsWith("/profiles/pepe/entries/rename") && init?.method === "PATCH") {
+      return jsonResponse(
+        options.renameBody ?? { name: "Rock Clasico", path: "Rock Clasico", type: "directory", size_bytes: null },
+        options.renameStatus ?? 200,
+      );
+    }
+    if (url.endsWith("/profiles/pepe/entries") && init?.method === "DELETE") {
+      return jsonResponse({ status: "trashed", original_path: "tema.mp3" });
+    }
+    if (url.endsWith("/profiles/pepe/entries/move") && init?.method === "POST") {
+      return jsonResponse(
+        options.moveBody ?? { name: "tema.mp3", path: "Rock/tema.mp3", type: "file", size_bytes: 1200 },
+        options.moveStatus ?? 200,
+      );
     }
     if (url.includes("/downloads") && init?.method === "POST") {
       return jsonResponse(
@@ -207,6 +451,23 @@ function mockApi(options: { createDownloadStatus?: number; createDownloadBody?: 
     return jsonResponse({ detail: "Not found" }, 404);
   });
   return fetchMock;
+}
+
+function findFetchCall(
+  fetchMock: FetchSpy,
+  urlSuffix: string,
+  method: string,
+) {
+  return fetchMock.mock.calls.find(
+    ([url, init]) => String(url).endsWith(urlSuffix) && init?.method === method,
+  );
+}
+
+function countFetchCalls(
+  fetchMock: FetchSpy,
+  urlPart: string,
+) {
+  return fetchMock.mock.calls.filter(([url]) => String(url).includes(urlPart)).length;
 }
 
 function jsonResponse(body: unknown, status = 200): Response {

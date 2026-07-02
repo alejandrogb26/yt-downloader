@@ -1,11 +1,18 @@
 import { ApiError } from "./errors";
 import type {
   CreateDownloadRequest,
+  CreateDirectoryRequest,
+  CreatedDirectory,
   CreatedDownloadJob,
   DownloadJobDetail,
   DownloadJobListResponse,
   LibraryEntriesResponse,
+  LibraryEntry,
+  MoveEntryRequest,
   ProfilesResponse,
+  RenameEntryRequest,
+  TrashEntryRequest,
+  TrashedEntry,
 } from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
@@ -26,6 +33,60 @@ export async function getLibraryEntries(
   return requestJson<LibraryEntriesResponse>(
     `/profiles/${encodeURIComponent(profileId)}/entries?${params.toString()}`,
   );
+}
+
+export async function createDirectory(
+  profileId: string,
+  parentPath: string,
+  name: string,
+): Promise<CreatedDirectory> {
+  const body: CreateDirectoryRequest = { parent_path: parentPath, name };
+  return requestJson<CreatedDirectory>(`/profiles/${encodeURIComponent(profileId)}/directories`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function renameEntry(
+  profileId: string,
+  path: string,
+  newName: string,
+): Promise<LibraryEntry> {
+  const body: RenameEntryRequest = { path, new_name: newName };
+  return requestJson<LibraryEntry>(
+    `/profiles/${encodeURIComponent(profileId)}/entries/rename`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export async function trashEntry(profileId: string, path: string): Promise<TrashedEntry> {
+  const body: TrashEntryRequest = { path };
+  return requestJson<TrashedEntry>(`/profiles/${encodeURIComponent(profileId)}/entries`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function moveEntry(
+  profileId: string,
+  sourcePath: string,
+  targetDirectoryPath: string,
+): Promise<LibraryEntry> {
+  const body: MoveEntryRequest = {
+    source_path: sourcePath,
+    target_directory_path: targetDirectoryPath,
+  };
+  return requestJson<LibraryEntry>(`/profiles/${encodeURIComponent(profileId)}/entries/move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 export async function createDownloadJob(

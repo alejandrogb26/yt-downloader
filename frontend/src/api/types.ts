@@ -20,6 +20,36 @@ export type LibraryEntriesResponse = {
   entries: LibraryEntry[];
 };
 
+export type CreateDirectoryRequest = {
+  parent_path: string;
+  name: string;
+};
+
+export type CreatedDirectory = {
+  name: string;
+  path: string;
+  type: "directory";
+};
+
+export type RenameEntryRequest = {
+  path: string;
+  new_name: string;
+};
+
+export type TrashEntryRequest = {
+  path: string;
+};
+
+export type TrashedEntry = {
+  status: string;
+  original_path: string;
+};
+
+export type MoveEntryRequest = {
+  source_path: string;
+  target_directory_path: string;
+};
+
 export type DownloadStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export type DownloadJobListItem = {

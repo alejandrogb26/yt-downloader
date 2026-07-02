@@ -4,7 +4,7 @@
 
 ## Componentes previstos
 
-- Frontend: aplicación React/Vite separada para seleccionar perfiles, navegar la biblioteca en modo solo lectura, elegir destino, crear trabajos y consultar estados.
+- Frontend: aplicación React/Vite separada para seleccionar perfiles, navegar y gestionar operaciones básicas de biblioteca, elegir destino, crear trabajos y consultar estados.
 - Backend: API FastAPI con Pydantic v2. Actualmente incluye configuración base, `GET /api/v1/health`, `GET /api/v1/profiles`, navegación con `GET /api/v1/profiles/{profile_id}/entries`, creación de directorios con `POST /api/v1/profiles/{profile_id}/directories`, renombrado con `PATCH /api/v1/profiles/{profile_id}/entries/rename`, movimiento con `POST /api/v1/profiles/{profile_id}/entries/move`, envío a papelera con `DELETE /api/v1/profiles/{profile_id}/entries` y endpoints para crear y consultar trabajos de descarga.
 - Worker de descargas: proceso independiente one-shot para reclamar un trabajo de MariaDB, descargar una pista de audio con `yt-dlp`, publicar el resultado en NFS y finalizar el estado.
 - MariaDB: base de datos para trabajos de descarga, eventos, estados e historial. La capa ORM y las migraciones iniciales ya están preparadas.
@@ -24,6 +24,16 @@ MariaDB / worker / NFS
 ```
 
 En desarrollo, Vite usa un proxy para reenviar `/api` a `http://127.0.0.1:8080`. La API no configura CORS en esta fase. En producción se espera servir el frontend estático y la API bajo el mismo origen mediante Caddy. Caddy y HTTPS siguen pendientes de implementación.
+
+```text
+Frontend Biblioteca
+  ├── listar entradas
+  ├── seleccionar destino de descarga
+  ├── crear carpetas
+  ├── renombrar entradas
+  ├── mover dentro del perfil
+  └── enviar a papelera
+```
 
 ## Perfiles de biblioteca
 
