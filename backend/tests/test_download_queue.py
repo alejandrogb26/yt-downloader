@@ -5,8 +5,10 @@ import pytest
 
 from yt_downloader_api.core.config import Settings, get_settings
 from yt_downloader_api.db.models import DownloadJob, DownloadJobEvent, DownloadJobStatus
+from yt_downloader_api.repositories.download_queue import DownloadQueueRepositoryError
 from yt_downloader_api.services.download_queue import (
     CompletedDownloadJob,
+    DownloadQueuePersistenceError,
     claim_next_queued_job,
     mark_running_job_as_completed,
     mark_running_job_as_failed,
@@ -18,8 +20,8 @@ from yt_downloader_api.services.download_state import (
     InvalidDownloadStateTransitionError,
     validate_status_transition,
 )
+from yt_downloader_api.worker.main import diagnose_queue_source, run_once
 from yt_downloader_api.worker.main import main as worker_main
-from yt_downloader_api.worker.main import run_once
 
 
 class InMemoryDownloadQueueRepository:
@@ -219,6 +221,54 @@ class InMemoryDownloadQueueRepository:
         ):
             return None
         return job
+
+
+class FailingStaleRepository(InMemoryDownloadQueueRepository):
+    def mark_stale_running_jobs_as_failed(
+        self,
+        stale_before: datetime,
+        failed_at: datetime,
+    ) -> int:
+        raise DownloadQueueRepositoryError("simulated stale failure")
+
+
+class FailingClaimRepository(InMemoryDownloadQueueRepository):
+    def mark_stale_running_jobs_as_failed(
+        self,
+        stale_before: datetime,
+        failed_at: datetime,
+    ) -> int:
+        return 0
+
+    def claim_next_queued_job(
+        self,
+        worker_id: str,
+        claimed_at: datetime,
+    ) -> DownloadJob | None:
+        raise DownloadQueueRepositoryError("simulated claim failure")
+
+
+class FakeDiagnosticSource:
+    def __init__(self) -> None:
+        self.checked_repository = False
+
+    def check_connection(self) -> None:
+        return None
+
+    def has_heartbeat_column(self) -> bool:
+        return True
+
+    def count_jobs_by_status(self) -> dict[str, int]:
+        return {
+            "queued": 2,
+            "running": 0,
+            "completed": 0,
+            "failed": 0,
+            "cancelled": 0,
+        }
+
+    def check_repository(self) -> None:
+        self.checked_repository = True
 
 
 def make_job(
@@ -496,6 +546,35 @@ def test_worker_run_once_without_jobs(capsys: pytest.CaptureFixture[str]) -> Non
     assert "No queued jobs available." in capsys.readouterr().out
 
 
+def test_worker_logs_exception_when_stale_recovery_fails(
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    settings = Settings(database_url="mysql+pymysql://user:secret@host:3306/db")
+
+    with pytest.raises(DownloadQueuePersistenceError):
+        run_once(settings, FailingStaleRepository())
+
+    assert "operation=recover stale running jobs" in caplog.text
+    assert "simulated stale failure" in caplog.text
+    assert "mysql+pymysql" not in caplog.text
+    assert "secret" not in caplog.text
+    assert "secret" not in capsys.readouterr().out
+
+
+def test_worker_logs_exception_when_claim_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = Settings(database_url="mysql+pymysql://user:secret@host:3306/db")
+
+    with pytest.raises(DownloadQueuePersistenceError):
+        run_once(settings, FailingClaimRepository())
+
+    assert "operation=claim next queued job" in caplog.text
+    assert "simulated claim failure" in caplog.text
+    assert "secret" not in caplog.text
+
+
 def test_worker_run_once_claims_single_job(capsys: pytest.CaptureFixture[str]) -> None:
     repository = InMemoryDownloadQueueRepository()
     settings = Settings(
@@ -576,12 +655,64 @@ def test_worker_main_without_database_url(
     monkeypatch.delenv("DATABASE_URL", raising=False)
     get_settings.cache_clear()
 
-    exit_code = worker_main()
+    exit_code = worker_main([])
 
     output = capsys.readouterr().out
     assert exit_code == 1
     assert "DATABASE_URL is required" in output
     assert "mysql" not in output
+
+
+def test_diagnose_queue_without_database_url_is_safe(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = diagnose_queue_source(
+        Settings(database_url=None),
+        FakeDiagnosticSource(),
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "DATABASE_URL is required" in output
+    assert "mysql" not in output
+
+
+def test_diagnose_queue_success_with_fake_source(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = FakeDiagnosticSource()
+    settings = Settings(database_url="mysql+pymysql://user:secret@host:3306/db")
+
+    exit_code = diagnose_queue_source(settings, source)
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Database connection: OK" in output
+    assert "Queue schema: OK" in output
+    assert "Queued jobs: 2" in output
+    assert "Running jobs: 0" in output
+    assert "Queue repository check: OK" in output
+    assert "read-only" in output
+    assert "secret" not in output
+    assert source.checked_repository is True
+
+
+def test_diagnose_queue_does_not_run_external_processes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_process(*args: object, **kwargs: object) -> None:
+        raise AssertionError("External processes must not be executed")
+
+    monkeypatch.setattr(subprocess, "run", fail_process)
+    monkeypatch.setattr(subprocess, "Popen", fail_process)
+
+    assert (
+        diagnose_queue_source(
+            Settings(database_url="mysql+pymysql://user:secret@host:3306/db"),
+            FakeDiagnosticSource(),
+        )
+        == 0
+    )
 
 
 def test_worker_does_not_run_external_processes(

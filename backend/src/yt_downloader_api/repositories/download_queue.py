@@ -67,38 +67,36 @@ class DownloadQueueRepository:
         failed_at: datetime,
     ) -> int:
         try:
-            stale_jobs = list(
-                self.session.scalars(
-                    select(DownloadJob)
-                    .where(DownloadJob.status == DownloadJobStatus.RUNNING.value)
-                    .where(
-                        or_(
-                            DownloadJob.heartbeat_at.is_(None),
-                            DownloadJob.heartbeat_at < stale_before,
+            with self.session.begin():
+                stale_jobs = list(
+                    self.session.scalars(
+                        select(DownloadJob)
+                        .where(DownloadJob.status == DownloadJobStatus.RUNNING.value)
+                        .where(
+                            or_(
+                                DownloadJob.heartbeat_at.is_(None),
+                                DownloadJob.heartbeat_at < stale_before,
+                            )
+                        )
+                        .order_by(DownloadJob.created_at.asc(), DownloadJob.id.asc())
+                    ).all()
+                )
+                for job in stale_jobs:
+                    job.status = DownloadJobStatus.FAILED.value
+                    job.finished_at = failed_at
+                    job.updated_at = failed_at
+                    job.error_code = INTERRUPTED_ERROR_CODE
+                    job.error_message = INTERRUPTED_MESSAGE
+                    self.session.add(
+                        DownloadJobEvent(
+                            job_id=job.id,
+                            created_at=failed_at,
+                            level="error",
+                            message=INTERRUPTED_MESSAGE,
+                            progress_percent=None,
                         )
                     )
-                    .order_by(DownloadJob.created_at.asc(), DownloadJob.id.asc())
-                ).all()
-            )
-            count = 0
-            for job in stale_jobs:
-                job.status = DownloadJobStatus.FAILED.value
-                job.finished_at = failed_at
-                job.updated_at = failed_at
-                job.error_code = INTERRUPTED_ERROR_CODE
-                job.error_message = INTERRUPTED_MESSAGE
-                self.session.add(
-                    DownloadJobEvent(
-                        job_id=job.id,
-                        created_at=failed_at,
-                        level="error",
-                        message=INTERRUPTED_MESSAGE,
-                        progress_percent=None,
-                    )
-                )
-                self.session.commit()
-                count += 1
-            return count
+            return len(stale_jobs)
         except SQLAlchemyError as exc:
             self.session.rollback()
             raise DownloadQueueRepositoryError from exc
