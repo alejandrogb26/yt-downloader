@@ -8,8 +8,8 @@
 - Backend: API FastAPI con Pydantic v2. Actualmente incluye configuración base, `GET /api/v1/health`, `GET /api/v1/profiles`, navegación con `GET /api/v1/profiles/{profile_id}/entries`, creación de directorios con `POST /api/v1/profiles/{profile_id}/directories`, renombrado con `PATCH /api/v1/profiles/{profile_id}/entries/rename`, movimiento con `POST /api/v1/profiles/{profile_id}/entries/move`, envío a papelera con `DELETE /api/v1/profiles/{profile_id}/entries` y endpoints para crear y consultar trabajos de descarga.
 - Worker de descargas: proceso independiente one-shot para reclamar un trabajo de MariaDB, descargar una pista de audio con `yt-dlp`, publicar el resultado en NFS y finalizar el estado.
 - MariaDB: base de datos para trabajos de descarga, eventos, estados e historial. La capa ORM y las migraciones iniciales ya están preparadas.
-- Almacenamiento NFS: ubicación compartida para archivos descargados. No implementado todavía.
-- Infraestructura: plantillas para Caddy, HTTPS con certificado manual y servicios systemd en `infra/`.
+- Almacenamiento NFS: ubicaciones compartidas por perfil para archivos descargados.
+- Infraestructura: plantillas para Nginx central con HTTPS, Caddy HTTP interno en el CT y servicios systemd en `infra/`.
 
 ## Flujo web
 
@@ -23,25 +23,27 @@ FastAPI
 MariaDB / worker / NFS
 ```
 
-En desarrollo, Vite usa un proxy para reenviar `/api` a `http://127.0.0.1:8080`. La API no configura CORS en esta fase. En producción se espera servir el frontend estático y la API bajo el mismo origen mediante Caddy. Las plantillas de Caddy, HTTPS y systemd están en `infra/`.
+En desarrollo, Vite usa un proxy para reenviar `/api` a `http://127.0.0.1:8080`. La API no configura CORS en esta fase. En producción se espera servir el frontend estático y la API bajo el mismo origen público mediante Nginx central y Caddy interno. Las plantillas de Nginx, Caddy y systemd están en `infra/`.
 
 ## Topología de despliegue prevista
 
 ```text
-Navegador
+Cliente
   ↓ HTTPS 443
-Caddy
+Nginx central
+  ↓ HTTP interno TCP 8081
+Caddy en CT
   ├── frontend React estático
   └── /api/* → FastAPI en 127.0.0.1:8080
                     ↓
                  MariaDB externa
                     ↑
-systemd timer → worker one-shot → staging local → NFS
+worker systemd timer → staging local → NFS por perfil
 ```
 
-FastAPI no queda accesible desde la red: escucha en `127.0.0.1:8080`. Caddy es el único servicio previsto escuchando en `443`, sirve el build estático y reenvía únicamente `/api/*` conservando el prefijo `/api`. La configuración carga un certificado TLS y una clave privada ya entregados manualmente al CT para `music.alejandrogb.local`. Caddy, HTTPS y systemd están documentados como plantillas en `infra/`, pero deben instalarse manualmente en el CT.
+FastAPI no queda accesible desde la red: escucha en `127.0.0.1:8080`. El DNS interno `music.alejandrogb.local` debe resolver al Nginx central. Nginx es el único componente que escucha en `443` para ese nombre, termina HTTPS y reenvía HTTP interno a `IP_CT:8081`. Caddy en el CT no usa certificados, escucha solo en la IP real del CT y sirve el build estático; reenvía únicamente `/api/*` conservando el prefijo `/api`.
 
-El DNS interno debe resolver `music.alejandrogb.local` a la IP del CT, el certificado debe tener ese nombre como válido y los clientes deben confiar en la CA emisora. La clave privada no debe versionarse ni copiarse al repositorio.
+El firewall del CT debe permitir TCP `8081` exclusivamente desde el Nginx central. Caddy debe confiar solo en la IP del Nginx central como proxy. Los certificados y claves pertenecen al Nginx central y no deben versionarse ni copiarse al repositorio.
 
 No hay autenticación todavía. Antes de exponer el servicio fuera de una LAN de confianza harán falta autenticación, revisión de firewall, política TLS pública si procede y endurecimiento operativo adicional.
 
@@ -69,7 +71,16 @@ PROFILES_CONFIG_PATH="$PWD/config/profiles.example.json" uv run --project backen
 
 ## Navegación de bibliotecas
 
-`/mnt/music` será un montaje NFS en el servidor. Cada perfil apunta a una raíz interna dentro de ese montaje mediante `root_path`.
+Cada perfil apunta a una raíz NFS independiente mediante `root_path`. `/mnt/music` puede ser solo un directorio padre local, no un montaje único compartido. Ejemplos de raíces de perfil: `/mnt/music/alejandrogb` y `/mnt/music/pepe`.
+
+Cada montaje de perfil debe definirse en `/etc/fstab` con `_netdev`. Ejemplo orientativo:
+
+```fstab
+nas:/export/music/alejandrogb /mnt/music/alejandrogb nfs4 rw,_netdev,noatime 0 0
+nas:/export/music/pepe /mnt/music/pepe nfs4 rw,_netdev,noatime 0 0
+```
+
+El worker valida la ruta concreta del perfil antes de ejecutar o publicar una descarga. Si falta un montaje NFS, el fallo afecta a ese perfil o trabajo, no a todos los perfiles.
 
 La API de navegación usa siempre rutas relativas al `root_path` del perfil. El cliente nunca recibe rutas reales del sistema, rutas absolutas ni el valor de `root_path`.
 

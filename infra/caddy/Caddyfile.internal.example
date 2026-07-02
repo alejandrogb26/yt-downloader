@@ -1,5 +1,12 @@
-music.alejandrogb.local {
-    tls /etc/ssl/yt-downloader/music.alejandrogb.local.crt /etc/ssl/yt-downloader/music.alejandrogb.local.key
+{
+    servers {
+        trusted_proxies static IP_NGINX/32
+        trusted_proxies_strict
+    }
+}
+
+http://music.alejandrogb.local:8081 {
+    bind IP_CT
 
     encode zstd gzip
 

@@ -1,24 +1,26 @@
 # Despliegue en CT LXC sin Docker
 
-Este directorio contiene plantillas para desplegar `yt-downloader` en un CT LXC de Proxmox sin Docker. No instala paquetes ni habilita servicios por sí mismo.
+Este directorio contiene plantillas para desplegar `yt-downloader` en un CT LXC de Proxmox con Debian 13 y sin Docker. No instala paquetes ni habilita servicios por sí mismo.
 
 ## Topología
 
 ```text
-Navegador
+Cliente
   ↓ HTTPS 443
-Caddy
+Nginx central
+  ↓ HTTP interno TCP 8081
+Caddy en CT
   ├── frontend React estático
   └── /api/* → FastAPI en 127.0.0.1:8080
                     ↓
                  MariaDB externa
                     ↑
-systemd timer → worker one-shot → staging local → NFS
+worker systemd timer → staging local → NFS por perfil
 ```
 
-FastAPI escucha solo en `127.0.0.1:8080`. Caddy es el único servicio previsto escuchando en `443`. La configuración carga un certificado TLS y una clave privada ya entregados manualmente al CT para `music.alejandrogb.local`.
+El DNS interno `music.alejandrogb.local` debe resolver al Nginx central, no al CT. Nginx es el único componente que escucha en `443` para ese nombre, termina HTTPS con el certificado gestionado por el administrador y reenvía HTTP interno al CT en TCP `8081`.
 
-El DNS interno debe resolver `music.alejandrogb.local` a la IP del CT. El certificado debe tener `music.alejandrogb.local` como nombre válido. Los clientes deben confiar en la CA emisora del certificado entregado.
+Caddy en el CT no usa certificados ni claves privadas. FastAPI escucha solo en `127.0.0.1:8080`. El firewall del CT debe permitir TCP `8081` únicamente desde `IP_NGINX`.
 
 No hay autenticación todavía. Limita este servicio a una LAN de confianza mediante firewall y no expongas `443` a Internet.
 
@@ -31,12 +33,10 @@ No hay autenticación todavía. Limita este servicio a una LAN de confianza medi
 - Configuración privada: `/etc/yt-downloader`
 - Perfiles: `/etc/yt-downloader/profiles.json`
 - Variables de entorno: `/etc/yt-downloader/yt-downloader.env`
-- Certificado TLS: `/etc/ssl/yt-downloader/music.alejandrogb.local.crt`
-- Clave privada TLS: `/etc/ssl/yt-downloader/music.alejandrogb.local.key`
 - Staging local: `/var/lib/yt-downloader/staging`
-- Bibliotecas NFS: `/mnt/music`
+- Bibliotecas NFS por perfil: `/mnt/music/alejandrogb`, `/mnt/music/pepe`, `/mnt/music/<otro-perfil>`
 
-Los perfiles definen sus rutas individuales dentro de `/mnt/music`.
+Los perfiles definen sus rutas individuales dentro de `/mnt/music`. Ese directorio puede ser solo el padre local; no debe asumirse que sea un punto de montaje único.
 
 ## Usuario de Servicio
 
@@ -49,17 +49,9 @@ Permisos esperados:
 - `yt-downloader` puede leer `/etc/yt-downloader/yt-downloader.env`.
 - `yt-downloader` puede escribir en `/var/lib/yt-downloader/staging`.
 - `yt-downloader` tiene permisos NFS reales sobre las rutas configuradas para perfiles.
-- `yt-downloader` no necesita acceso al certificado ni a la clave privada TLS.
 - `caddy` solo necesita lectura de `/var/www/yt-downloader`.
-- El usuario del servicio Caddy debe poder leer `/etc/ssl/yt-downloader/music.alejandrogb.local.key`.
 
-Permisos recomendados para el certificado entregado:
-
-- Directorio `/etc/ssl/yt-downloader`: propietario `root`, grupo `caddy`, modo `0750`.
-- Certificado `/etc/ssl/yt-downloader/music.alejandrogb.local.crt`: propietario `root`, grupo `caddy`, modo `0644`.
-- Clave privada `/etc/ssl/yt-downloader/music.alejandrogb.local.key`: propietario `root`, grupo `caddy`, modo `0640`.
-
-No presupongas UID o GID fijos. La clave privada no debe versionarse ni copiarse al repositorio.
+Los certificados y claves privadas se gestionan en el Nginx central. No deben copiarse al CT ni versionarse en este repositorio.
 
 ## Entorno
 
@@ -126,15 +118,9 @@ El usuario `caddy` debe poder leer `/var/www/yt-downloader`.
 
 Plantilla: `infra/caddy/Caddyfile.internal.example`.
 
-La configuración sirve `/var/www/yt-downloader`, soporta rutas SPA con fallback a `/index.html`, y reenvía solo `/api/*` a `127.0.0.1:8080` sin reescribir la ruta. No incluye reglas especiales para `/docs` ni `/openapi.json`.
+La configuración escucha en HTTP interno `IP_CT:8081`, enlazada solo a `IP_CT`. Sirve `/var/www/yt-downloader`, soporta rutas SPA con fallback a `/index.html`, y reenvía solo `/api/*` a `127.0.0.1:8080` sin reescribir la ruta. No incluye reglas especiales para `/docs` ni `/openapi.json`.
 
-Instalar certificado y clave ya entregados:
-
-```bash
-sudo install -d -m 0750 -o root -g caddy /etc/ssl/yt-downloader
-sudo install -m 0644 -o root -g caddy /ruta/al/certificado.crt /etc/ssl/yt-downloader/music.alejandrogb.local.crt
-sudo install -m 0640 -o root -g caddy /ruta/a/la-clave.key /etc/ssl/yt-downloader/music.alejandrogb.local.key
-```
+Sustituye `IP_CT` por la IP real del CT y `IP_NGINX` por la IP real del Nginx central. Caddy debe confiar únicamente en `IP_NGINX/32` como proxy. El firewall del CT debe permitir TCP `8081` exclusivamente desde `IP_NGINX`.
 
 Instalar y validar:
 
@@ -144,14 +130,45 @@ sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 sudo systemctl enable --now caddy
 ```
 
-Tras renovar o sustituir el certificado o la clave privada, valida la configuración y recarga Caddy:
+## Nginx central
 
-```bash
-sudo install -m 0644 -o root -g caddy /ruta/al/certificado-nuevo.crt /etc/ssl/yt-downloader/music.alejandrogb.local.crt
-sudo install -m 0640 -o root -g caddy /ruta/a/la-clave-nueva.key /etc/ssl/yt-downloader/music.alejandrogb.local.key
-sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-sudo systemctl reload caddy
+Plantilla: `infra/nginx/music.alejandrogb.local.conf.example`.
+
+Nginx recibe HTTPS en `443` para `music.alejandrogb.local`, termina TLS con el certificado gestionado por el administrador y reenvía HTTP interno a `http://IP_CT:8081`. Sustituye `IP_CT` por la IP real del CT. No añadas una URI al `proxy_pass`, para no alterar rutas ni quitar el prefijo `/api`.
+
+Tras cambiar la configuración del virtual host o renovar el certificado en el servidor Nginx, valida y recarga Nginx según el procedimiento operativo de ese servidor.
+
+## NFS por perfil
+
+Cada perfil tiene una raíz NFS independiente definida en `/etc/yt-downloader/profiles.json`. Ejemplo orientativo:
+
+```json
+{
+  "profiles": [
+    {
+      "id": "alejandrogb",
+      "display_name": "Alejandro GB",
+      "root_path": "/mnt/music/alejandrogb",
+      "enabled": true
+    },
+    {
+      "id": "pepe",
+      "display_name": "Pepe",
+      "root_path": "/mnt/music/pepe",
+      "enabled": true
+    }
+  ]
+}
 ```
+
+Cada montaje de perfil debe estar definido en `/etc/fstab` con `_netdev`. Ejemplo orientativo:
+
+```fstab
+nas:/export/music/alejandrogb /mnt/music/alejandrogb nfs4 rw,_netdev,noatime 0 0
+nas:/export/music/pepe /mnt/music/pepe nfs4 rw,_netdev,noatime 0 0
+```
+
+El worker valida la ruta concreta del perfil antes de ejecutar o publicar una descarga. Un montaje NFS ausente afecta solo a ese perfil o trabajo.
 
 ## systemd
 
@@ -179,9 +196,12 @@ systemctl list-timers yt-downloader-worker.timer
 journalctl -u yt-downloader-api.service -f
 journalctl -u yt-downloader-worker.service -f
 curl https://music.alejandrogb.local/api/v1/health
+curl -H 'Host: music.alejandrogb.local' http://IP_CT:8081/api/v1/health
+findmnt -T /mnt/music/alejandrogb
+findmnt -T /mnt/music/pepe
 ```
 
-El comando anterior debe funcionar sin desactivar la validación TLS si el DNS interno resuelve `music.alejandrogb.local` hacia el CT y el cliente confía en la CA emisora del certificado.
+El primer `curl` se ejecuta desde un cliente LAN y pasa por Nginx central. El segundo `curl` se ejecuta desde el CT para comprobar Caddy directamente sin depender del DNS público interno. Los comandos `findmnt` verifican montajes concretos de perfiles.
 
 ## Rollback
 

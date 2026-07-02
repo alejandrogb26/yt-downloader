@@ -12,20 +12,27 @@
 
 Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la creación segura de directorios, el renombrado seguro de ficheros/directorios, el movimiento de entradas dentro de un mismo perfil, el envío de entradas a papelera, la base ORM/Alembic, el registro de trabajos de descarga en cola, la consulta de trabajos/eventos, un worker one-shot que descarga una única pista de audio por ejecución, un frontend React separado y plantillas de despliegue sin Docker en `infra/`. El frontend permite crear trabajos, listar la biblioteca, seleccionar destino, crear carpetas, renombrar entradas, mover entradas dentro del perfil y enviar entradas a papelera. No se incluye autenticación, daemon permanente, cancelación ni reintentos automáticos.
 
-Topología de despliegue prevista en CT LXC:
+Topología de despliegue prevista en LAN con CT LXC:
 
 ```text
-Navegador -> HTTPS 443 -> Caddy -> frontend estático
-                              -> /api/* -> FastAPI 127.0.0.1:8080
-systemd timer -> worker one-shot -> staging local -> NFS
-FastAPI / worker -> MariaDB externa
+Cliente
+  ↓ HTTPS 443
+Nginx central
+  ↓ HTTP interno TCP 8081
+Caddy en CT
+  ├── frontend estático
+  └── /api/* -> FastAPI 127.0.0.1:8080
+                    ↓
+                 MariaDB externa
+                    ↑
+worker systemd timer -> staging local -> NFS por perfil
 ```
 
-FastAPI escucha solo en `127.0.0.1:8080`; Caddy es el único servicio previsto en `443`. La plantilla usa un certificado TLS ya entregado en el CT para `music.alejandrogb.local` y está pensada para una LAN de confianza. El DNS interno debe resolver `music.alejandrogb.local` a la IP del CT y los clientes deben confiar en la CA emisora del certificado. No expongas el servicio a Internet mientras no exista autenticación y una política de seguridad completa.
+El DNS interno `music.alejandrogb.local` debe resolver al Nginx central, no al CT. Nginx termina HTTPS con el certificado gestionado por el administrador y reenvía HTTP interno al CT en TCP `8081`. Caddy no usa certificados y debe escuchar solo en la IP real del CT. FastAPI escucha solo en `127.0.0.1:8080`. No expongas el servicio a Internet mientras no exista autenticación y una política de seguridad completa.
 
 ## Perfiles de biblioteca
 
-Los perfiles definen bibliotecas disponibles para el sistema. Cada perfil tiene un identificador público, un nombre visible y una ruta raíz interna (`root_path`) donde estará la biblioteca.
+Los perfiles definen bibliotecas disponibles para el sistema. Cada perfil tiene un identificador público, un nombre visible y una ruta raíz interna (`root_path`) donde estará la biblioteca. En despliegue, cada perfil puede tener su propio montaje NFS, por ejemplo `/mnt/music/alejandrogb` y `/mnt/music/pepe`; `/mnt/music` puede ser solo el directorio padre local.
 
 La API `GET /api/v1/profiles` devuelve solo perfiles habilitados y nunca expone `root_path` al cliente. Las rutas reales son configuración de infraestructura.
 
@@ -53,7 +60,7 @@ La política inicial de descarga es solo audio, sin recodificación por defecto.
 
 MariaDB almacena la política solicitada y el formato técnico realmente obtenido: contenedor, códec, formato fuente y si se aplicó transcodificación. En esta versión `transcode_applied` permanece siempre en `false`.
 
-El worker descarga primero en staging local (`DOWNLOAD_STAGING_ROOT`, por defecto `/var/lib/yt-downloader/staging`) bajo un directorio único por trabajo. Solo cuando la descarga termina correctamente copia el fichero a un temporal oculto dentro del destino NFS y lo publica sin sobrescribir archivos existentes. El staging no debe estar dentro de ninguna biblioteca de perfil ni bajo `/mnt/music`.
+El worker descarga primero en staging local (`DOWNLOAD_STAGING_ROOT`, por defecto `/var/lib/yt-downloader/staging`) bajo un directorio único por trabajo. Solo cuando la descarga termina correctamente copia el fichero a un temporal oculto dentro del destino NFS del perfil y lo publica sin sobrescribir archivos existentes. El staging no debe estar dentro de ninguna biblioteca de perfil ni bajo `/mnt/music`.
 
 El esquema se aplica con Alembic. La API no crea tablas al arrancar y `GET /api/v1/health` funciona aunque `DATABASE_URL` no esté configurada.
 

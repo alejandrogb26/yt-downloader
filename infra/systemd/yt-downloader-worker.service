@@ -1,9 +1,8 @@
 [Unit]
 Description=yt-downloader one-shot worker
 After=network-online.target remote-fs.target
-Wants=network-online.target
-RequiresMountsFor=/mnt/music /var/lib/yt-downloader/staging
-ConditionPathIsMountPoint=/mnt/music
+Wants=network-online.target remote-fs.target
+RequiresMountsFor=/var/lib/yt-downloader/staging
 
 [Service]
 Type=oneshot
