@@ -151,7 +151,7 @@ describe("frontend", () => {
     await user.type(screen.getByLabelText("Nombre de la carpeta"), "Rock");
     await user.click(screen.getByRole("button", { name: "Crear" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("An entry with this name already exists.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Ya existe una entrada con ese nombre.");
   });
 
   test("renombra una entrada con path y new_name correctos", async () => {
@@ -182,7 +182,7 @@ describe("frontend", () => {
     await user.type(screen.getByLabelText("Nuevo nombre"), "Nombre");
     await user.click(screen.getByRole("button", { name: "Guardar" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Invalid entry name.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("El nombre de la entrada no es válido.");
   });
 
   test("pide confirmación antes de enviar a papelera y cancela sin llamar API", async () => {
@@ -312,7 +312,7 @@ describe("frontend", () => {
     await user.click(within(screen.getByRole("dialog", { name: "Mover entrada" })).getByRole("button", { name: /Rock/ }));
     await user.click(screen.getByRole("button", { name: "Mover aquí" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("An entry with this name already exists.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Ya existe una entrada con ese nombre.");
   });
 
   test("envía formulario con profile_id, source_url y destination_path correctos", async () => {
@@ -338,7 +338,7 @@ describe("frontend", () => {
     });
   });
 
-  test("muestra error seguro devuelto por API", async () => {
+  test("muestra error de URL en español", async () => {
     mockApi({ createDownloadStatus: 422, createDownloadBody: { detail: "Invalid source URL." } });
     const user = userEvent.setup();
     renderApp(["/downloads"]);
@@ -346,7 +346,35 @@ describe("frontend", () => {
     await user.type(await screen.findByLabelText("URL"), "no-es-url");
     await user.click(screen.getByRole("button", { name: "Crear trabajo" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Invalid source URL.");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("La URL de origen no es válida.");
+    expect(alert).not.toHaveTextContent("Invalid source URL.");
+  });
+
+  test("muestra error de servicio de descargas no disponible en español", async () => {
+    mockApi({ createDownloadStatus: 503, createDownloadBody: { detail: "Download service is unavailable." } });
+    const user = userEvent.setup();
+    renderApp(["/downloads"]);
+
+    await user.type(await screen.findByLabelText("URL"), "https://www.youtube.com/watch?v=abc");
+    await user.click(screen.getByRole("button", { name: "Crear trabajo" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "El servicio de descargas no está disponible.",
+    );
+  });
+
+  test("muestra fallback seguro para errores desconocidos", async () => {
+    mockApi({ createDownloadStatus: 500, createDownloadBody: { detail: "Internal SQL detail" } });
+    const user = userEvent.setup();
+    renderApp(["/downloads"]);
+
+    await user.type(await screen.findByLabelText("URL"), "https://www.youtube.com/watch?v=abc");
+    await user.click(screen.getByRole("button", { name: "Crear trabajo" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Se ha producido un error al comunicarse con el servicio.");
+    expect(alert).not.toHaveTextContent("Internal SQL detail");
   });
 
   test("muestra lista de trabajos con estados y progreso", async () => {
@@ -365,7 +393,9 @@ describe("frontend", () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("network"));
     renderApp(["/downloads"]);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo contactar con la API.");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Se ha producido un error al comunicarse con el servicio.",
+    );
   });
 });
 

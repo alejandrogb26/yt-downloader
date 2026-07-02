@@ -191,11 +191,32 @@ async def test_create_download_accepts_root_destination(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "source_url",
+    ("source_url", "canonical_source_url"),
     [
-        "https://www.youtube.com/watch?v=VIDEO_ID",
-        "https://youtube.com/shorts/VIDEO_ID",
-        "https://youtu.be/VIDEO_ID",
+        (
+            "https://www.youtube.com/watch?v=VIDEO_ID",
+            "https://www.youtube.com/watch?v=VIDEO_ID",
+        ),
+        (
+            "https://youtube.com/shorts/VIDEO_ID",
+            "https://www.youtube.com/watch?v=VIDEO_ID",
+        ),
+        (
+            "https://youtu.be/VIDEO_ID",
+            "https://www.youtube.com/watch?v=VIDEO_ID",
+        ),
+        (
+            "https://www.youtube.com/watch?v=vLe5gDq0BhE&list=RDvLe5gDq0BhE",
+            "https://www.youtube.com/watch?v=vLe5gDq0BhE",
+        ),
+        (
+            "https://youtu.be/vLe5gDq0BhE?list=RDvLe5gDq0BhE",
+            "https://www.youtube.com/watch?v=vLe5gDq0BhE",
+        ),
+        (
+            "https://www.youtube.com/shorts/vLe5gDq0BhE?si=tracking&feature=share",
+            "https://www.youtube.com/watch?v=vLe5gDq0BhE",
+        ),
     ],
 )
 async def test_create_download_accepts_valid_video_urls(
@@ -204,6 +225,7 @@ async def test_create_download_accepts_valid_video_urls(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     source_url: str,
+    canonical_source_url: str,
 ) -> None:
     library_root = tmp_path / "library"
     library_root.mkdir()
@@ -212,7 +234,8 @@ async def test_create_download_accepts_valid_video_urls(
     response = await create_download(client, source_url=source_url)
 
     assert response.status_code == 201
-    assert fake_repository.jobs[-1].source_url == source_url
+    assert fake_repository.jobs[-1].source_url == canonical_source_url
+    assert response.json()["source_url"] == canonical_source_url
 
 
 @pytest.mark.anyio
@@ -224,9 +247,11 @@ async def test_create_download_accepts_valid_video_urls(
         "https://user@www.youtube.com/watch?v=VIDEO_ID",
         "https://user:pass@www.youtube.com/watch?v=VIDEO_ID",
         "https://www.youtube.com:8443/watch?v=VIDEO_ID",
-        "https://www.youtube.com/watch?v=VIDEO_ID&list=PLAYLIST_ID",
+        "https://www.youtube.com/playlist?list=PL123",
+        "https://www.youtube.com/watch?list=PL123",
         "https://www.youtube.com/channel/CHANNEL_ID",
         "https://www.youtube.com/results?search_query=music",
+        "https://www.youtube.com/@channel",
         "https://www.youtube.com/watch?v=bad\x00id",
         f"https://www.youtube.com/watch?v={'a' * 2050}",
     ],
