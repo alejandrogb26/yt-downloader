@@ -1,0 +1,25 @@
+[Unit]
+Description=yt-downloader FastAPI service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yt-downloader
+Group=yt-downloader
+WorkingDirectory=/opt/yt-downloader/backend
+EnvironmentFile=/etc/yt-downloader/yt-downloader.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/yt-downloader/backend/.venv/bin/uvicorn yt_downloader_api.main:app --host 127.0.0.1 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+UMask=0027
+ReadOnlyPaths=/opt/yt-downloader /etc/yt-downloader
+ReadWritePaths=/var/lib/yt-downloader /mnt/music
+
+[Install]
+WantedBy=multi-user.target

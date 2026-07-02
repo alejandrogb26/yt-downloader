@@ -1,0 +1,23 @@
+[Unit]
+Description=yt-downloader one-shot worker
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/mnt/music /var/lib/yt-downloader/staging
+ConditionPathIsMountPoint=/mnt/music
+
+[Service]
+Type=oneshot
+User=yt-downloader
+Group=yt-downloader
+WorkingDirectory=/opt/yt-downloader/backend
+EnvironmentFile=/etc/yt-downloader/yt-downloader.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/yt-downloader/backend/.venv/bin/python -m yt_downloader_api.worker.main
+TimeoutStartSec=infinity
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+UMask=0027
+ReadOnlyPaths=/opt/yt-downloader /etc/yt-downloader
+ReadWritePaths=/var/lib/yt-downloader /mnt/music

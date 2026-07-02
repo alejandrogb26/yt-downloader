@@ -1,0 +1,19 @@
+music.example.internal {
+    tls internal
+
+    encode zstd gzip
+
+    root * /var/www/yt-downloader
+
+    route {
+        @api path /api/*
+        handle @api {
+            reverse_proxy 127.0.0.1:8080
+        }
+
+        handle {
+            try_files {path} /index.html
+            file_server
+        }
+    }
+}

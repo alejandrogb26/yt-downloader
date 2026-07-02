@@ -25,6 +25,24 @@ MariaDB / worker / NFS
 
 En desarrollo, Vite usa un proxy para reenviar `/api` a `http://127.0.0.1:8080`. La API no configura CORS en esta fase. En producción se espera servir el frontend estático y la API bajo el mismo origen mediante Caddy. Caddy y HTTPS siguen pendientes de implementación.
 
+## Topología de despliegue prevista
+
+```text
+Navegador
+  ↓ HTTPS 443
+Caddy
+  ├── frontend React estático
+  └── /api/* → FastAPI en 127.0.0.1:8080
+                    ↓
+                 MariaDB externa
+                    ↑
+systemd timer → worker one-shot → staging local → NFS
+```
+
+FastAPI no queda accesible desde la red: escucha en `127.0.0.1:8080`. Caddy es el único servicio previsto escuchando en `443`, sirve el build estático y reenvía únicamente `/api/*` conservando el prefijo `/api`. La configuración inicial usa la CA interna de Caddy (`tls internal`) para una red interna. Caddy, HTTPS interno y systemd están documentados como plantillas en `infra/`, pero deben instalarse manualmente en el CT.
+
+No hay autenticación todavía. Antes de exponer el servicio fuera de una LAN de confianza harán falta autenticación, revisión de firewall, política TLS pública si procede y endurecimiento operativo adicional.
+
 ```text
 Frontend Biblioteca
   ├── listar entradas
@@ -129,6 +147,6 @@ La compatibilidad de formatos de fallback con Audio Station se comprobará más 
 
 ## Estado actual
 
-La parte funcional actual incluye el backend en `backend`, ejecutable con Uvicorn en `127.0.0.1:8080`, y el frontend React/Vite en `frontend`, ejecutable en desarrollo con `npm run dev`.
+La parte funcional actual incluye el backend en `backend`, ejecutable con Uvicorn en `127.0.0.1:8080`, el frontend React/Vite en `frontend`, ejecutable en desarrollo con `npm run dev`, y plantillas de despliegue sin Docker en `infra/`.
 
 No hay Dockerfiles ni `docker-compose` en este bloque.

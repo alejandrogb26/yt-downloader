@@ -10,7 +10,18 @@
 - MariaDB: base de datos relacional para trabajos de descarga, eventos e historial.
 - Almacenamiento NFS: destino compartido para los archivos descargados.
 
-Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la creación segura de directorios, el renombrado seguro de ficheros/directorios, el movimiento de entradas dentro de un mismo perfil, el envío de entradas a papelera, la base ORM/Alembic, el registro de trabajos de descarga en cola, la consulta de trabajos/eventos, un worker one-shot que descarga una única pista de audio por ejecución y un frontend React separado. El frontend permite crear trabajos, listar la biblioteca, seleccionar destino, crear carpetas, renombrar entradas, mover entradas dentro del perfil y enviar entradas a papelera. No se incluye Docker, Caddy, HTTPS, systemd, daemon permanente, cancelación ni reintentos automáticos.
+Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la creación segura de directorios, el renombrado seguro de ficheros/directorios, el movimiento de entradas dentro de un mismo perfil, el envío de entradas a papelera, la base ORM/Alembic, el registro de trabajos de descarga en cola, la consulta de trabajos/eventos, un worker one-shot que descarga una única pista de audio por ejecución, un frontend React separado y plantillas de despliegue sin Docker en `infra/`. El frontend permite crear trabajos, listar la biblioteca, seleccionar destino, crear carpetas, renombrar entradas, mover entradas dentro del perfil y enviar entradas a papelera. No se incluye autenticación, daemon permanente, cancelación ni reintentos automáticos.
+
+Topología de despliegue prevista en CT LXC:
+
+```text
+Navegador -> HTTPS 443 -> Caddy -> frontend estático
+                              -> /api/* -> FastAPI 127.0.0.1:8080
+systemd timer -> worker one-shot -> staging local -> NFS
+FastAPI / worker -> MariaDB externa
+```
+
+FastAPI escucha solo en `127.0.0.1:8080`; Caddy es el único servicio previsto en `443`. La plantilla usa CA interna de Caddy y está pensada para una LAN de confianza. No expongas el servicio a Internet mientras no exista autenticación y una política de seguridad completa.
 
 ## Perfiles de biblioteca
 
@@ -205,4 +216,4 @@ uv run --project backend python -m yt_downloader_api.worker.main
 
 ## Docker
 
-Este proyecto no usa Docker en este bloque inicial.
+Este proyecto no usa Docker. Las plantillas de despliegue para CT LXC están en `infra/` e incluyen ejemplos de Caddy, systemd y entorno privado.
