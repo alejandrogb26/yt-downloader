@@ -330,6 +330,18 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .folder-children { animation: reveal 180ms ease; }
 .tree-loading { color: var(--color-text-muted); display: block; font-size: 0.85rem; padding: 6px 8px 6px 42px; }
 .library-commandbar { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0; }
+.library-searchbar {
+  align-items: end;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin: 12px 0;
+  padding: 12px;
+}
+.library-searchbar p { color: var(--color-text-muted); grid-column: 1 / -1; margin: 0; }
 .breadcrumbs { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
 .breadcrumbs button { background: var(--color-surface-muted); border: 1px solid var(--color-border); border-radius: 999px; color: var(--color-text); padding: 6px 10px; }
 .entry-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
@@ -351,6 +363,12 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .entry-icon { font-size: 1.35rem; }
 .entry-name { font-weight: 800; overflow-wrap: anywhere; }
 .entry-meta, .entry-path { color: var(--color-text-muted); font-size: 0.84rem; overflow-wrap: anywhere; }
+.search-results { display: grid; gap: 12px; margin-top: 14px; }
+.search-results-heading { align-items: start; display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; }
+.search-results-heading h3 { margin: 0; }
+.search-results-heading p, .search-results-heading span { color: var(--color-text-muted); margin: 4px 0 0; }
+.search-result-grid { margin-top: 0; }
+.search-result-card { min-width: 0; }
 .inline-form { align-items: end; background: var(--color-surface-muted); border: 1px solid var(--color-border); border-radius: var(--radius-md); display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; padding: 12px; }
 
 .action-menu { position: relative; }
@@ -452,6 +470,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   .drawer-scrim { background: rgb(0 0 0 / 0.42); border: 0; display: block; inset: 0; position: fixed; z-index: 45; }
   .mobile-only { display: inline-flex; }
   .content-panel { margin-top: 0; }
+  .library-searchbar { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 700px) {

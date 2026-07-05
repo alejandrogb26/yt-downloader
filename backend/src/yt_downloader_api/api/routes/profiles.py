@@ -18,8 +18,13 @@ from yt_downloader_api.services.filesystem import (
     list_directory_entries,
     move_entry,
     rename_entry,
+    search_entries,
     trash_entry,
     validate_relative_directory_path,
+)
+from yt_downloader_api.services.library_exclusions import (
+    LibraryExclusionsConfigurationError,
+    load_library_excluded_names,
 )
 from yt_downloader_api.services.profiles import (
     ProfilesConfigurationError,
@@ -43,6 +48,8 @@ REQUESTED_PATH_NOT_DIRECTORY_MESSAGE = "Requested path is not a directory."
 PROFILE_STORAGE_UNAVAILABLE_MESSAGE = "Profile storage is unavailable."
 ENTRY_ALREADY_EXISTS_MESSAGE = "An entry with this name already exists."
 CANNOT_MOVE_DIRECTORY_INTO_ITSELF_MESSAGE = "Cannot move a directory into itself."
+LIBRARY_EXCLUSIONS_UNAVAILABLE_MESSAGE = "Library exclusions configuration is invalid."
+INVALID_SEARCH_QUERY_MESSAGE = "Invalid search query."
 
 
 class PublicProfile(BaseModel):
@@ -65,6 +72,14 @@ class ProfileEntriesResponse(BaseModel):
     profile: PublicProfile
     path: str
     entries: list[ProfileEntry]
+
+
+class ProfileSearchResponse(BaseModel):
+    profile: PublicProfile
+    q: str
+    limit: int
+    truncated: bool
+    results: list[ProfileEntry]
 
 
 class CreateDirectoryRequest(BaseModel):
@@ -129,10 +144,18 @@ def list_profile_entries(profile_id: str, path: str = "") -> ProfileEntriesRespo
 
     try:
         profile = load_enabled_profile(settings.profiles_config_path, profile_id)
+        excluded_names = load_library_excluded_names(
+            settings.library_exclusions_config_path
+        )
     except ProfilesConfigurationError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=PROFILES_UNAVAILABLE_MESSAGE,
+        ) from exc
+    except LibraryExclusionsConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=LIBRARY_EXCLUSIONS_UNAVAILABLE_MESSAGE,
         ) from exc
 
     if profile is None:
@@ -142,7 +165,7 @@ def list_profile_entries(profile_id: str, path: str = "") -> ProfileEntriesRespo
         )
 
     try:
-        entries = list_directory_entries(profile.root_path, safe_path)
+        entries = list_directory_entries(profile.root_path, safe_path, excluded_names)
     except InvalidDirectoryPathError as exc:
         raise HTTPException(
             status_code=422,
@@ -157,6 +180,11 @@ def list_profile_entries(profile_id: str, path: str = "") -> ProfileEntriesRespo
         raise HTTPException(
             status_code=422,
             detail=REQUESTED_PATH_NOT_DIRECTORY_MESSAGE,
+        ) from exc
+    except RequestedEntryNotAllowedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=REQUESTED_ENTRY_NOT_ALLOWED_MESSAGE,
         ) from exc
     except ProfileStorageUnavailableError as exc:
         raise HTTPException(
@@ -179,6 +207,64 @@ def list_profile_entries(profile_id: str, path: str = "") -> ProfileEntriesRespo
     )
 
 
+@router.get("/profiles/{profile_id}/search", response_model=ProfileSearchResponse)
+def search_profile_entries(
+    profile_id: str,
+    q: str,
+    limit: int = 50,
+) -> ProfileSearchResponse:
+    settings = get_settings()
+    try:
+        profile = load_enabled_profile(settings.profiles_config_path, profile_id)
+        excluded_names = load_library_excluded_names(
+            settings.library_exclusions_config_path
+        )
+    except ProfilesConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PROFILES_UNAVAILABLE_MESSAGE,
+        ) from exc
+    except LibraryExclusionsConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=LIBRARY_EXCLUSIONS_UNAVAILABLE_MESSAGE,
+        ) from exc
+
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=PROFILE_NOT_FOUND_MESSAGE,
+        )
+
+    try:
+        results, truncated = search_entries(profile.root_path, q, limit, excluded_names)
+    except InvalidEntryPathError as exc:
+        raise HTTPException(
+            status_code=422, detail=INVALID_SEARCH_QUERY_MESSAGE
+        ) from exc
+    except ProfileStorageUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PROFILE_STORAGE_UNAVAILABLE_MESSAGE,
+        ) from exc
+
+    return ProfileSearchResponse(
+        profile=PublicProfile(id=profile.id, display_name=profile.display_name),
+        q=q.strip(),
+        limit=limit,
+        truncated=truncated,
+        results=[
+            ProfileEntry(
+                name=entry.name,
+                path=entry.path,
+                type=entry.type,
+                size_bytes=entry.size_bytes,
+            )
+            for entry in results
+        ],
+    )
+
+
 @router.post(
     "/profiles/{profile_id}/directories",
     response_model=CreatedDirectoryResponse,
@@ -191,10 +277,18 @@ def create_profile_directory(
     settings = get_settings()
     try:
         profile = load_enabled_profile(settings.profiles_config_path, profile_id)
+        excluded_names = load_library_excluded_names(
+            settings.library_exclusions_config_path
+        )
     except ProfilesConfigurationError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=PROFILES_UNAVAILABLE_MESSAGE,
+        ) from exc
+    except LibraryExclusionsConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=LIBRARY_EXCLUSIONS_UNAVAILABLE_MESSAGE,
         ) from exc
 
     if profile is None:
@@ -208,6 +302,7 @@ def create_profile_directory(
             profile.root_path,
             request.parent_path,
             request.name,
+            excluded_names,
         )
     except InvalidDirectoryPathError as exc:
         raise HTTPException(
@@ -228,6 +323,11 @@ def create_profile_directory(
         raise HTTPException(
             status_code=422,
             detail=REQUESTED_PATH_NOT_DIRECTORY_MESSAGE,
+        ) from exc
+    except RequestedEntryNotAllowedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=REQUESTED_ENTRY_NOT_ALLOWED_MESSAGE,
         ) from exc
     except EntryAlreadyExistsError as exc:
         raise HTTPException(
@@ -255,10 +355,18 @@ def rename_profile_entry(
     settings = get_settings()
     try:
         profile = load_enabled_profile(settings.profiles_config_path, profile_id)
+        excluded_names = load_library_excluded_names(
+            settings.library_exclusions_config_path
+        )
     except ProfilesConfigurationError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=PROFILES_UNAVAILABLE_MESSAGE,
+        ) from exc
+    except LibraryExclusionsConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=LIBRARY_EXCLUSIONS_UNAVAILABLE_MESSAGE,
         ) from exc
 
     if profile is None:
@@ -272,6 +380,7 @@ def rename_profile_entry(
             profile.root_path,
             request.path,
             request.new_name,
+            excluded_names,
         )
     except InvalidEntryPathError as exc:
         raise HTTPException(status_code=422, detail=INVALID_ENTRY_PATH_MESSAGE) from exc
@@ -314,10 +423,18 @@ def move_profile_entry(
     settings = get_settings()
     try:
         profile = load_enabled_profile(settings.profiles_config_path, profile_id)
+        excluded_names = load_library_excluded_names(
+            settings.library_exclusions_config_path
+        )
     except ProfilesConfigurationError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=PROFILES_UNAVAILABLE_MESSAGE,
+        ) from exc
+    except LibraryExclusionsConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=LIBRARY_EXCLUSIONS_UNAVAILABLE_MESSAGE,
         ) from exc
 
     if profile is None:
@@ -331,6 +448,7 @@ def move_profile_entry(
             profile.root_path,
             request.source_path,
             request.target_directory_path,
+            excluded_names,
         )
     except InvalidEntryPathError as exc:
         raise HTTPException(status_code=422, detail=INVALID_ENTRY_PATH_MESSAGE) from exc
@@ -396,10 +514,18 @@ def trash_profile_entry(
     settings = get_settings()
     try:
         profile = load_enabled_profile(settings.profiles_config_path, profile_id)
+        excluded_names = load_library_excluded_names(
+            settings.library_exclusions_config_path
+        )
     except ProfilesConfigurationError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=PROFILES_UNAVAILABLE_MESSAGE,
+        ) from exc
+    except LibraryExclusionsConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=LIBRARY_EXCLUSIONS_UNAVAILABLE_MESSAGE,
         ) from exc
 
     if profile is None:
@@ -409,7 +535,7 @@ def trash_profile_entry(
         )
 
     try:
-        trashed_entry = trash_entry(profile.root_path, request.path)
+        trashed_entry = trash_entry(profile.root_path, request.path, excluded_names)
     except InvalidEntryPathError as exc:
         raise HTTPException(status_code=422, detail=INVALID_ENTRY_PATH_MESSAGE) from exc
     except EntryNotFoundError as exc:

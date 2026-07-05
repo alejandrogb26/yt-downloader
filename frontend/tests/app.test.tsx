@@ -1,5 +1,5 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Navigate, RouterProvider, createMemoryRouter } from "react-router-dom";
 import { describe, expect, test, vi } from "vitest";
@@ -31,6 +31,23 @@ const rockEntriesResponse = {
   profile: { id: "pepe", display_name: "Pepe" },
   path: "Rock",
   entries: [{ name: "Clasicos", path: "Rock/Clasicos", type: "directory", size_bytes: null }],
+};
+
+const songbookEntriesResponse = {
+  profile: { id: "pepe", display_name: "Pepe" },
+  path: "Songbook",
+  entries: [],
+};
+
+const librarySearchResponse = {
+  profile: { id: "pepe", display_name: "Pepe" },
+  q: "so",
+  limit: 50,
+  truncated: false,
+  results: [
+    { name: "Songbook", path: "Songbook", type: "directory", size_bytes: null },
+    { name: "solo.mp3", path: "Rock/solo.mp3", type: "file", size_bytes: 2048 },
+  ],
 };
 
 const downloadsResponse = {
@@ -194,6 +211,76 @@ describe("frontend rediseñado", () => {
     expect(screen.getAllByText("/Rock").length).toBeGreaterThan(0);
   });
 
+  test("muestra la barra de búsqueda y no consulta antes de dos caracteres", async () => {
+    const fetchMock = mockApi();
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    const searchInput = await screen.findByPlaceholderText("Buscar carpetas y archivos en esta biblioteca");
+    expect(
+      await screen.findByText((_, element) => element?.textContent === "Ámbito: biblioteca completa de Pepe."),
+    ).toBeInTheDocument();
+    await user.type(searchInput, "s");
+    expect(await screen.findByText("Escribe al menos 2 caracteres para buscar.")).toBeInTheDocument();
+
+    expect(countFetchCalls(fetchMock, "/api/v1/profiles/pepe/search")).toBe(0);
+  });
+
+  test("renderiza resultados de búsqueda de carpeta y fichero", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await user.type(await screen.findByPlaceholderText("Buscar carpetas y archivos en esta biblioteca"), "so");
+
+    expect(await screen.findByRole("heading", { name: "Resultados para “so”" })).toBeInTheDocument();
+    expect(await screen.findByText("Songbook")).toBeInTheDocument();
+    expect(await screen.findByText("Archivo · 0.0 MB")).toBeInTheDocument();
+    expect(await screen.findByText("/Rock/solo.mp3")).toBeInTheDocument();
+  });
+
+  test("muestra estado vacío de búsqueda", async () => {
+    mockApi({ searchBody: { ...librarySearchResponse, results: [] } });
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await user.type(await screen.findByPlaceholderText("Buscar carpetas y archivos en esta biblioteca"), "zz");
+
+    expect(await screen.findByText("No se han encontrado carpetas ni archivos con ese nombre.")).toBeInTheDocument();
+  });
+
+  test("limpia la búsqueda y restaura el navegador normal", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await user.type(await screen.findByPlaceholderText("Buscar carpetas y archivos en esta biblioteca"), "so");
+    expect(await screen.findByRole("heading", { name: "Resultados para “so”" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Limpiar búsqueda" }));
+
+    await waitFor(() => expect(screen.queryByRole("heading", { name: /Resultados para/ })).not.toBeInTheDocument());
+    expect(screen.getByRole("listitem", { name: "Seleccionar Rock" })).toBeInTheDocument();
+  });
+
+  test("navega desde un resultado de carpeta", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await user.type(await screen.findByPlaceholderText("Buscar carpetas y archivos en esta biblioteca"), "so");
+    await user.click((await screen.findByText("Songbook")).closest("button")!);
+
+    expect(await screen.findByRole("heading", { name: "/Songbook" })).toBeInTheDocument();
+  });
+
+  test("no muestra exclusiones en la biblioteca", async () => {
+    mockApi();
+    renderApp(["/library?profile=pepe"]);
+
+    expect(await screen.findByRole("listitem", { name: "Seleccionar Rock" })).toBeInTheDocument();
+    expect(screen.queryByText("@eaDir")).not.toBeInTheDocument();
+  });
+
   test("crea carpeta en la carpeta activa con payload correcto", async () => {
     const fetchMock = mockApi();
     const user = userEvent.setup();
@@ -322,10 +409,13 @@ function mockApi(
     renameBody?: unknown;
     moveStatus?: number;
     moveBody?: unknown;
+    searchBody?: unknown;
   } = {},
 ) {
   const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
+    if (url.includes("/profiles/pepe/search")) return jsonResponse(options.searchBody ?? librarySearchResponse);
+    if (url.includes("/profiles/pepe/entries?path=Songbook")) return jsonResponse(songbookEntriesResponse);
     if (url.includes("/profiles/pepe/entries?path=Rock")) return jsonResponse(rockEntriesResponse);
     if (url.includes("/profiles/pepe/entries?path=")) return jsonResponse(rootEntriesResponse);
     if (url.endsWith("/profiles")) return jsonResponse(profilesResponse);

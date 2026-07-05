@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8080
     profiles_config_path: str = "/etc/yt-downloader/profiles.json"
+    library_exclusions_config_path: str = "/etc/yt-downloader/library-exclusions.json"
     database_url: str | None = None
     database_pool_size: int = 5
     database_max_overflow: int = 5

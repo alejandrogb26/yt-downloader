@@ -61,6 +61,8 @@ Frontend Biblioteca
 
 Los perfiles se definen en un fichero JSON externo (`profiles.json`) indicado por la variable de entorno `PROFILES_CONFIG_PATH`. Su valor por defecto es `/etc/yt-downloader/profiles.json`.
 
+Las exclusiones del navegador de biblioteca se definen en un fichero independiente indicado por `LIBRARY_EXCLUSIONS_CONFIG_PATH`, con valor de producción `/etc/yt-downloader/library-exclusions.json`. Si no existe, no se excluye ningún nombre; si existe y no es válido, las rutas de biblioteca devuelven un error seguro sin rutas internas.
+
 Este fichero es configuración de infraestructura: contiene las rutas raíz reales de cada biblioteca y no debe exponerse al cliente. La API solo devuelve `id` y `display_name` de perfiles habilitados.
 
 El ejemplo versionable vive en `config/profiles.example.json`. Para desarrollo local puede usarse así, sin modificar `/etc`:

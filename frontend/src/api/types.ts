@@ -20,6 +20,14 @@ export type LibraryEntriesResponse = {
   entries: LibraryEntry[];
 };
 
+export type LibrarySearchResponse = {
+  profile: Profile;
+  q: string;
+  limit: number;
+  truncated: boolean;
+  results: LibraryEntry[];
+};
+
 export type CreateDirectoryRequest = {
   parent_path: string;
   name: string;

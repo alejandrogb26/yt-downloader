@@ -8,6 +8,7 @@ import {
   getProfiles,
   moveEntry,
   renameEntry,
+  searchLibrary,
   trashEntry,
 } from "../api/client";
 import { getUserErrorMessage } from "../api/errors";
@@ -35,8 +36,11 @@ export function LibraryPage() {
   const [renameValue, setRenameValue] = useState("");
   const [movingEntry, setMovingEntry] = useState<LibraryEntry | null>(null);
   const [moveTargetPath, setMoveTargetPath] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [clientError, setClientError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
+  const pendingSelectedEntryPath = useRef("");
 
   const profilesQuery = useQuery({ queryKey: ["profiles"], queryFn: getProfiles });
   const profiles = useMemo(() => profilesQuery.data?.profiles ?? [], [profilesQuery.data]);
@@ -57,6 +61,20 @@ export function LibraryPage() {
     enabled: Boolean(selectedProfileId),
   });
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(searchInput.trim());
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
+
+  const isSearchActive = debouncedSearch.length >= 2;
+  const searchQuery = useQuery({
+    queryKey: ["library-search", selectedProfileId, debouncedSearch],
+    queryFn: ({ signal }) => searchLibrary(selectedProfileId, debouncedSearch, 50, signal),
+    enabled: Boolean(selectedProfileId && isSearchActive),
+  });
+
   const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId);
   const entries = entriesQuery.data?.entries ?? [];
   const directories = entries.filter((entry) => entry.type === "directory");
@@ -70,6 +88,11 @@ export function LibraryPage() {
   });
 
   useEffect(() => {
+    if (pendingSelectedEntryPath.current) {
+      setSelectedEntryPath(pendingSelectedEntryPath.current);
+      pendingSelectedEntryPath.current = "";
+      return;
+    }
     setSelectedEntryPath("");
   }, [currentPath, selectedProfileId]);
 
@@ -134,6 +157,22 @@ export function LibraryPage() {
     setIsTreeOpen(false);
   };
 
+  const openSearchResult = (entry: LibraryEntry) => {
+    if (entry.type === "directory") {
+      openDirectory(entry.path);
+      setSelectedEntryPath("");
+      return;
+    }
+    const containingPath = parentPath(entry.path);
+    pendingSelectedEntryPath.current = entry.path;
+    openDirectory(containingPath);
+  };
+
+  const clearSearch = () => {
+    setSearchInput("");
+    setDebouncedSearch("");
+  };
+
   const selectedPathLabel = displayPath(currentPath);
 
   return (
@@ -155,6 +194,7 @@ export function LibraryPage() {
             onChange={(profileId) => {
               setSelectedProfileId(profileId);
               setCurrentPath("");
+              clearSearch();
               setExpandedPaths(new Set([""]));
             }}
             disabled={profilesQuery.isLoading}
@@ -221,6 +261,20 @@ export function LibraryPage() {
               </button>
             ))}
           </nav>
+
+          <div className="library-searchbar" role="search">
+            <Field label="Buscar en el perfil seleccionado">
+              <TextInput
+                value={searchInput}
+                onChange={(event) => setSearchInput(event.target.value)}
+                placeholder="Buscar carpetas y archivos en esta biblioteca"
+              />
+            </Field>
+            <Button type="button" variant="secondary" disabled={!searchInput} onClick={clearSearch}>
+              Limpiar búsqueda
+            </Button>
+            <p>Ámbito: biblioteca completa de {selectedProfile?.display_name ?? "este perfil"}.</p>
+          </div>
 
           <div className="library-commandbar">
             <Button variant="secondary" disabled={!currentPath} onClick={() => openDirectory(parentPath(currentPath))}>
@@ -313,16 +367,28 @@ export function LibraryPage() {
             </form>
           ) : null}
 
-          {entriesQuery.isLoading ? <Skeleton label="Cargando biblioteca" /> : null}
-          {entriesQuery.isError ? (
+          {searchInput.trim().length > 0 && searchInput.trim().length < 2 ? (
+            <StatusMessage tone="info">Escribe al menos 2 caracteres para buscar.</StatusMessage>
+          ) : null}
+          {isSearchActive ? (
+            <SearchResults
+              query={debouncedSearch}
+              response={searchQuery.data}
+              isLoading={searchQuery.isLoading || searchQuery.isFetching}
+              error={searchQuery.error}
+              onOpen={openSearchResult}
+            />
+          ) : null}
+          {!isSearchActive && entriesQuery.isLoading ? <Skeleton label="Cargando biblioteca" /> : null}
+          {!isSearchActive && entriesQuery.isError ? (
             <StatusMessage tone="error">{getUserErrorMessage(entriesQuery.error)}</StatusMessage>
           ) : null}
-          {!entriesQuery.isLoading && selectedProfileId && entries.length === 0 ? (
+          {!isSearchActive && !entriesQuery.isLoading && selectedProfileId && entries.length === 0 ? (
             <EmptyState title="Carpeta vacía">
               Crea una carpeta, selecciona este destino o vuelve a una carpeta superior.
             </EmptyState>
           ) : null}
-          {entries.length > 0 ? (
+          {!isSearchActive && entries.length > 0 ? (
             <EntryGrid
               entries={entries}
               selectedEntryPath={selectedEntryPath}
@@ -386,6 +452,58 @@ export function LibraryPage() {
         />
       ) : null}
     </div>
+  );
+}
+
+function SearchResults({
+  query,
+  response,
+  isLoading,
+  error,
+  onOpen,
+}: {
+  query: string;
+  response: { results: LibraryEntry[]; truncated: boolean; limit: number } | undefined;
+  isLoading: boolean;
+  error: unknown;
+  onOpen: (entry: LibraryEntry) => void;
+}) {
+  const results = response?.results ?? [];
+  return (
+    <section className="search-results" aria-label="Resultados de búsqueda">
+      <div className="search-results-heading">
+        <div>
+          <h3>Resultados para “{query}”</h3>
+          <p>Se busca por nombre en todo el perfil seleccionado.</p>
+        </div>
+        {response?.truncated ? <span>Se muestran solo los primeros {response.limit} resultados.</span> : null}
+      </div>
+      {isLoading ? <Skeleton label="Buscando en la biblioteca" /> : null}
+      {error ? <StatusMessage tone="error">{getUserErrorMessage(error)}</StatusMessage> : null}
+      {!isLoading && !error && results.length === 0 ? (
+        <EmptyState title="Sin resultados">No se han encontrado carpetas ni archivos con ese nombre.</EmptyState>
+      ) : null}
+      {results.length > 0 ? (
+        <div className="entry-grid search-result-grid" role="list">
+          {results.map((entry) => (
+            <button
+              type="button"
+              role="listitem"
+              key={entry.path}
+              className="entry-card search-result-card"
+              onClick={() => onOpen(entry)}
+            >
+              <span className="entry-icon" aria-hidden="true">{entry.type === "directory" ? "📁" : "♪"}</span>
+              <span className="entry-name">{entry.name}</span>
+              <span className="entry-meta">
+                {entry.type === "directory" ? "Carpeta" : `Archivo · ${formatBytes(entry.size_bytes)}`}
+              </span>
+              <span className="entry-path">{displayPath(entry.path)}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 

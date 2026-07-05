@@ -64,7 +64,7 @@ El worker descarga primero en staging local (`DOWNLOAD_STAGING_ROOT`, por defect
 
 El esquema se aplica con Alembic. La API no crea tablas al arrancar y `GET /api/v1/health` funciona aunque `DATABASE_URL` no esté configurada.
 
-Hay un ejemplo versionable en `config/profiles.example.json`. El fichero real `config/profiles.json` está ignorado por Git.
+Hay un ejemplo versionable en `config/profiles.example.json`. El fichero real `config/profiles.json` está ignorado por Git. Las exclusiones administradas del navegador de biblioteca se configuran con `LIBRARY_EXCLUSIONS_CONFIG_PATH`; en producción apunta a `/etc/yt-downloader/library-exclusions.json` y hay un ejemplo en `infra/config/library-exclusions.json.example`.
 
 ## Requisitos
 

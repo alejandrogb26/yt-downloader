@@ -8,6 +8,7 @@ import type {
   DownloadJobListResponse,
   LibraryEntriesResponse,
   LibraryEntry,
+  LibrarySearchResponse,
   MoveEntryRequest,
   ProfilesResponse,
   RenameEntryRequest,
@@ -32,6 +33,19 @@ export async function getLibraryEntries(
   const params = new URLSearchParams({ path });
   return requestJson<LibraryEntriesResponse>(
     `/profiles/${encodeURIComponent(profileId)}/entries?${params.toString()}`,
+  );
+}
+
+export async function searchLibrary(
+  profileId: string,
+  query: string,
+  limit = 50,
+  signal?: AbortSignal,
+): Promise<LibrarySearchResponse> {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  return requestJson<LibrarySearchResponse>(
+    `/profiles/${encodeURIComponent(profileId)}/search?${params.toString()}`,
+    { signal },
   );
 }
 

@@ -74,15 +74,22 @@ class TrashedEntry:
 
 
 def list_directory_entries(
-    root_path: str, relative_path: str = ""
+    root_path: str,
+    relative_path: str = "",
+    excluded_names: frozenset[str] = frozenset(),
 ) -> list[FileSystemEntry]:
     root = Path(root_path)
     safe_path = validate_relative_directory_path(relative_path)
+    ensure_path_has_no_excluded_components(safe_path, excluded_names)
     ensure_available_root(root)
     target = resolve_directory(root, safe_path)
 
     try:
-        entries = [entry for entry in target.iterdir() if is_listable_entry(entry)]
+        entries = [
+            entry
+            for entry in target.iterdir()
+            if is_listable_entry(entry, excluded_names)
+        ]
     except OSError as exc:
         raise ProfileStorageUnavailableError from exc
 
@@ -92,10 +99,17 @@ def list_directory_entries(
     )
 
 
-def create_directory(root_path: str, parent_path: str, name: str) -> CreatedDirectory:
+def create_directory(
+    root_path: str,
+    parent_path: str,
+    name: str,
+    excluded_names: frozenset[str] = frozenset(),
+) -> CreatedDirectory:
     root = Path(root_path)
     safe_parent_path = validate_relative_directory_path(parent_path)
     safe_name = validate_directory_name(name)
+    ensure_path_has_no_excluded_components(safe_parent_path, excluded_names)
+    ensure_name_is_not_excluded(safe_name, excluded_names)
     ensure_writable_root(root)
     parent = resolve_directory(root, safe_parent_path)
     target = parent / safe_name
@@ -122,10 +136,17 @@ def create_directory(root_path: str, parent_path: str, name: str) -> CreatedDire
     )
 
 
-def rename_entry(root_path: str, relative_path: str, new_name: str) -> FileSystemEntry:
+def rename_entry(
+    root_path: str,
+    relative_path: str,
+    new_name: str,
+    excluded_names: frozenset[str] = frozenset(),
+) -> FileSystemEntry:
     root = Path(root_path)
     safe_path = validate_relative_entry_path(relative_path)
     safe_name = validate_directory_name(new_name)
+    ensure_path_has_no_excluded_components(safe_path, excluded_names)
+    ensure_name_is_not_excluded(safe_name, excluded_names)
     ensure_writable_root(root)
 
     source = resolve_entry(root, safe_path)
@@ -160,10 +181,13 @@ def move_entry(
     root_path: str,
     source_path: str,
     target_directory_path: str = "",
+    excluded_names: frozenset[str] = frozenset(),
 ) -> FileSystemEntry:
     root = Path(root_path)
     safe_source_path = validate_relative_entry_path(source_path)
     safe_target_directory_path = validate_relative_directory_path(target_directory_path)
+    ensure_path_has_no_excluded_components(safe_source_path, excluded_names)
+    ensure_path_has_no_excluded_components(safe_target_directory_path, excluded_names)
     ensure_writable_root(root)
 
     source = resolve_entry(root, safe_source_path)
@@ -201,9 +225,14 @@ def move_entry(
     return to_file_system_entry(target, safe_target_directory_path)
 
 
-def trash_entry(root_path: str, relative_path: str) -> TrashedEntry:
+def trash_entry(
+    root_path: str,
+    relative_path: str,
+    excluded_names: frozenset[str] = frozenset(),
+) -> TrashedEntry:
     root = Path(root_path)
     safe_path = validate_relative_entry_path(relative_path)
+    ensure_path_has_no_excluded_components(safe_path, excluded_names)
     if is_trash_path(safe_path):
         raise RequestedEntryNotAllowedError
 
@@ -222,6 +251,56 @@ def trash_entry(root_path: str, relative_path: str) -> TrashedEntry:
         raise ProfileStorageUnavailableError from exc
 
     return TrashedEntry(status="trashed", original_path=safe_path)
+
+
+def search_entries(
+    root_path: str,
+    query: str,
+    limit: int = 50,
+    excluded_names: frozenset[str] = frozenset(),
+) -> tuple[list[FileSystemEntry], bool]:
+    safe_query = validate_search_query(query)
+    safe_limit = validate_search_limit(limit)
+    root = Path(root_path)
+    ensure_available_root(root)
+
+    matches: list[FileSystemEntry] = []
+    truncated = False
+    pending: list[tuple[Path, str]] = [(root, "")]
+
+    while pending:
+        directory, relative_directory_path = pending.pop()
+        try:
+            entries = [
+                entry
+                for entry in directory.iterdir()
+                if is_listable_entry(entry, excluded_names)
+            ]
+        except OSError as exc:
+            raise ProfileStorageUnavailableError from exc
+
+        for entry in sorted(
+            entries, key=lambda item: (not item.is_dir(), item.name.casefold())
+        ):
+            file_system_entry = to_file_system_entry(entry, relative_directory_path)
+            if safe_query in entry.name.casefold():
+                if len(matches) >= safe_limit:
+                    truncated = True
+                else:
+                    matches.append(file_system_entry)
+            if entry.is_dir():
+                pending.append((entry, file_system_entry.path))
+
+    matches.sort(
+        key=lambda entry: (
+            entry.type != "directory",
+            entry.name.casefold(),
+            entry.path.casefold(),
+        )
+    )
+    if len(matches) > safe_limit:
+        return matches[:safe_limit], True
+    return matches, truncated
 
 
 def validate_relative_directory_path(relative_path: str) -> str:
@@ -263,6 +342,33 @@ def validate_directory_name(name: str) -> str:
     ):
         raise InvalidDirectoryNameError
     return name
+
+
+def validate_search_query(query: str) -> str:
+    safe_query = query.strip()
+    if not safe_query or len(safe_query) > 120 or "\x00" in safe_query:
+        raise InvalidEntryPathError
+    return safe_query.casefold()
+
+
+def validate_search_limit(limit: int) -> int:
+    if limit < 1 or limit > 100:
+        raise InvalidEntryPathError
+    return limit
+
+
+def ensure_path_has_no_excluded_components(
+    relative_path: str, excluded_names: frozenset[str]
+) -> None:
+    if not relative_path:
+        return
+    for part in relative_path.split("/"):
+        ensure_name_is_not_excluded(part, excluded_names)
+
+
+def ensure_name_is_not_excluded(name: str, excluded_names: frozenset[str]) -> None:
+    if name.casefold() in excluded_names:
+        raise RequestedEntryNotAllowedError
 
 
 def ensure_available_root(root: Path) -> None:
@@ -386,8 +492,14 @@ def resolve_target_directory(root: Path, relative_path: str) -> Path:
     return current
 
 
-def is_listable_entry(entry: Path) -> bool:
-    if entry.name.startswith(".") or entry.is_symlink():
+def is_listable_entry(
+    entry: Path, excluded_names: frozenset[str] = frozenset()
+) -> bool:
+    if (
+        entry.name.startswith(".")
+        or entry.name.casefold() in excluded_names
+        or entry.is_symlink()
+    ):
         return False
     try:
         entry_status = entry.stat(follow_symlinks=False)

@@ -32,6 +32,7 @@ No hay autenticación todavía. Limita este servicio a una LAN de confianza medi
 - Frontend compilado: `/var/www/yt-downloader`
 - Configuración privada: `/etc/yt-downloader`
 - Perfiles: `/etc/yt-downloader/profiles.json`
+- Exclusiones de biblioteca: `/etc/yt-downloader/library-exclusions.json`
 - Variables de entorno: `/etc/yt-downloader/yt-downloader.env`
 - Staging local: `/var/lib/yt-downloader/staging`
 - Bibliotecas NFS por perfil: `/mnt/music/alejandrogb`, `/mnt/music/pepe`, `/mnt/music/<otro-perfil>`
@@ -66,7 +67,10 @@ sudo install -d -m 0750 -o root -g yt-downloader /etc/yt-downloader
 sudo install -d -m 0750 -o yt-downloader -g yt-downloader /var/lib/yt-downloader/staging
 sudo install -m 0640 -o root -g yt-downloader /ruta/al/yt-downloader.env /etc/yt-downloader/yt-downloader.env
 sudo install -m 0640 -o root -g yt-downloader /ruta/a/profiles.json /etc/yt-downloader/profiles.json
+sudo install -m 0640 -o root -g yt-downloader infra/config/library-exclusions.json.example /etc/yt-downloader/library-exclusions.json
 ```
+
+`LIBRARY_EXCLUSIONS_CONFIG_PATH` apunta al JSON de exclusiones de navegador. El formato es `{"excluded_names":["@eaDir"]}`. Los nombres son nombres base exactos, sin rutas ni patrones; si el fichero no existe, la API usa una lista vacía.
 
 ## Backend
 
