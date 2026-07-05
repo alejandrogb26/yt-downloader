@@ -15,6 +15,7 @@ import type { LibraryEntry } from "../api/types";
 import { useSelection } from "../app/SelectionContext";
 import { ProfileSelect } from "../components/ProfileSelect";
 import { StatusMessage } from "../components/StatusMessage";
+import { Button, Card, EmptyState, Field, IconButton, Skeleton, TextInput } from "../components/ui";
 import { breadcrumbs, displayPath, parentPath } from "../features/library/path";
 
 export function LibraryPage() {
@@ -25,10 +26,13 @@ export function LibraryPage() {
   const profileFromQuery = searchParams.get("profile") ?? "";
   const { selectedProfileId, setSelectedProfileId, setDestinationPath } = useSelection();
   const [currentPath, setCurrentPath] = useState("");
+  const [selectedEntryPath, setSelectedEntryPath] = useState("");
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set([""]));
+  const [isTreeOpen, setIsTreeOpen] = useState(false);
   const [isCreatingDirectory, setIsCreatingDirectory] = useState(false);
   const [directoryName, setDirectoryName] = useState("");
-  const [editingEntryPath, setEditingEntryPath] = useState("");
-  const [editingEntryName, setEditingEntryName] = useState("");
+  const [renamingEntry, setRenamingEntry] = useState<LibraryEntry | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   const [movingEntry, setMovingEntry] = useState<LibraryEntry | null>(null);
   const [moveTargetPath, setMoveTargetPath] = useState("");
   const [clientError, setClientError] = useState("");
@@ -55,6 +59,8 @@ export function LibraryPage() {
 
   const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId);
   const entries = entriesQuery.data?.entries ?? [];
+  const directories = entries.filter((entry) => entry.type === "directory");
+  const selectedEntry = entries.find((entry) => entry.path === selectedEntryPath) ?? null;
   const libraryQueryKey = ["library", selectedProfileId, currentPath];
 
   const moveEntriesQuery = useQuery({
@@ -63,6 +69,10 @@ export function LibraryPage() {
     enabled: Boolean(selectedProfileId && movingEntry),
   });
 
+  useEffect(() => {
+    setSelectedEntryPath("");
+  }, [currentPath, selectedProfileId]);
+
   const createDirectoryMutation = useMutation({
     mutationFn: () => createDirectory(selectedProfileId, currentPath, directoryName.trim()),
     onSuccess: async () => {
@@ -70,7 +80,7 @@ export function LibraryPage() {
       setClientError("");
       setIsCreatingDirectory(false);
       setDirectoryName("");
-      await queryClient.invalidateQueries({ queryKey: libraryQueryKey });
+      await invalidateLibrary(queryClient, selectedProfileId, currentPath);
     },
   });
 
@@ -80,8 +90,8 @@ export function LibraryPage() {
     onSuccess: async () => {
       setSuccessMessage("Entrada renombrada correctamente.");
       setClientError("");
-      setEditingEntryPath("");
-      setEditingEntryName("");
+      setRenamingEntry(null);
+      setRenameValue("");
       await queryClient.invalidateQueries({ queryKey: libraryQueryKey });
     },
   });
@@ -91,6 +101,7 @@ export function LibraryPage() {
     onSuccess: async () => {
       setSuccessMessage("Entrada enviada a la papelera correctamente.");
       setClientError("");
+      setSelectedEntryPath("");
       await queryClient.invalidateQueries({ queryKey: libraryQueryKey });
     },
   });
@@ -103,199 +114,251 @@ export function LibraryPage() {
       setClientError("");
       setMovingEntry(null);
       setMoveTargetPath("");
+      setSelectedEntryPath("");
       await queryClient.invalidateQueries({ queryKey: ["library", selectedProfileId] });
     },
   });
 
   const operationError =
-    createDirectoryMutation.error ??
-    renameMutation.error ??
-    trashMutation.error ??
-    moveMutation.error;
+    createDirectoryMutation.error ?? renameMutation.error ?? trashMutation.error ?? moveMutation.error;
   const isMutating =
     createDirectoryMutation.isPending ||
     renameMutation.isPending ||
     trashMutation.isPending ||
     moveMutation.isPending;
-  const moveValidationMessage = movingEntry
-    ? getMoveValidationMessage(movingEntry, moveTargetPath)
-    : "";
+  const moveValidationMessage = movingEntry ? getMoveValidationMessage(movingEntry, moveTargetPath) : "";
+
+  const openDirectory = (path: string) => {
+    setCurrentPath(path);
+    setExpandedPaths((previous) => new Set(previous).add(path));
+    setIsTreeOpen(false);
+  };
+
+  const selectedPathLabel = displayPath(currentPath);
 
   return (
-    <section className="panel" aria-labelledby="library-heading">
-      <div className="panel-heading-row">
+    <div className="library-page">
+      <section className="page-hero page-hero--library">
         <div>
-          <h2 id="library-heading">Biblioteca</h2>
-          <p className="muted">Explorador de solo lectura para elegir una carpeta destino.</p>
+          <p className="eyebrow">Explorador NFS</p>
+          <h2>Biblioteca</h2>
+          <p>
+            Navega por carpetas bajo demanda, gestiona entradas y selecciona destinos de descarga
+            sin exponer rutas internas al navegador.
+          </p>
         </div>
-        {isSelecting ? <Link to="/downloads">Volver a descargas</Link> : null}
-      </div>
+        <div className="hero-actions">
+          {isSelecting ? <Link to="/downloads">Volver a descargas</Link> : null}
+          <ProfileSelect
+            profiles={profiles}
+            value={selectedProfileId}
+            onChange={(profileId) => {
+              setSelectedProfileId(profileId);
+              setCurrentPath("");
+              setExpandedPaths(new Set([""]));
+            }}
+            disabled={profilesQuery.isLoading}
+          />
+        </div>
+      </section>
 
-      {profilesQuery.isLoading ? <p>Cargando perfiles...</p> : null}
+      {profilesQuery.isLoading ? <Skeleton label="Cargando perfiles" /> : null}
       {profilesQuery.isError ? (
         <StatusMessage tone="error">{getUserErrorMessage(profilesQuery.error)}</StatusMessage>
       ) : null}
       {!profilesQuery.isLoading && profiles.length === 0 ? (
         <StatusMessage tone="info">No hay perfiles disponibles.</StatusMessage>
       ) : null}
-
-      <div className="library-toolbar">
-        <ProfileSelect
-          profiles={profiles}
-          value={selectedProfileId}
-          onChange={(profileId) => {
-            setSelectedProfileId(profileId);
-            setCurrentPath("");
-          }}
-        />
-        <button type="button" className="button button-secondary" onClick={() => setCurrentPath("")}>
-          Volver a la raíz
-        </button>
-        <button
-          type="button"
-          className="button"
-          disabled={!selectedProfileId}
-          onClick={() => {
-            setDestinationPath(currentPath);
-            navigate("/downloads");
-          }}
-        >
-          Seleccionar esta carpeta
-        </button>
-        <button
-          type="button"
-          className="button button-secondary"
-          disabled={!selectedProfileId || isMutating}
-          onClick={() => {
-            setClientError("");
-            setSuccessMessage("");
-            setIsCreatingDirectory(true);
-          }}
-        >
-          Crear carpeta
-        </button>
-      </div>
-
-      {isCreatingDirectory ? (
-        <form
-          className="inline-form"
-          aria-label="Crear carpeta"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const validationError = validateEntryName(directoryName);
-            if (validationError) {
-              setClientError(validationError);
-              return;
-            }
-            setClientError("");
-            setSuccessMessage("");
-            createDirectoryMutation.mutate();
-          }}
-        >
-          <label className="field">
-            <span>Nombre de la carpeta</span>
-            <input value={directoryName} onChange={(event) => setDirectoryName(event.target.value)} />
-          </label>
-          <button type="submit" className="button" disabled={isMutating}>
-            Crear
-          </button>
-          <button
-            type="button"
-            className="button button-secondary"
-            disabled={isMutating}
-            onClick={() => {
-              setIsCreatingDirectory(false);
-              setDirectoryName("");
-              setClientError("");
-            }}
-          >
-            Cancelar
-          </button>
-        </form>
-      ) : null}
-
       {successMessage ? <StatusMessage tone="success">{successMessage}</StatusMessage> : null}
       {clientError ? <StatusMessage tone="error">{clientError}</StatusMessage> : null}
       {operationError ? <StatusMessage tone="error">{getUserErrorMessage(operationError)}</StatusMessage> : null}
 
-      <div className="current-location" aria-live="polite">
-        <p>
-          <strong>Perfil:</strong> {selectedProfile?.display_name ?? "Sin perfil"}
-        </p>
-        <p>
-          <strong>Ruta:</strong> {displayPath(currentPath)}
-        </p>
+      <div className="library-layout">
+        <Card className={`folder-panel ${isTreeOpen ? "folder-panel--open" : ""}`} aria-label="Árbol de carpetas">
+          <div className="panel-title-row">
+            <div>
+              <h3>Carpetas</h3>
+              <p>{selectedProfile?.display_name ?? "Sin perfil"}</p>
+            </div>
+            <IconButton label="Cerrar panel de carpetas" className="mobile-only" onClick={() => setIsTreeOpen(false)}>
+              <span aria-hidden="true">×</span>
+            </IconButton>
+          </div>
+          <FolderTree
+            profileId={selectedProfileId}
+            currentPath={currentPath}
+            expandedPaths={expandedPaths}
+            onSelect={openDirectory}
+            onToggle={(path) => {
+              setExpandedPaths((previous) => {
+                const next = new Set(previous);
+                if (next.has(path)) {
+                  next.delete(path);
+                } else {
+                  next.add(path);
+                }
+                return next;
+              });
+            }}
+          />
+        </Card>
+
+        <Card className="content-panel" aria-labelledby="library-content-heading">
+          <div className="library-topline">
+            <Button variant="secondary" className="mobile-only" onClick={() => setIsTreeOpen(true)}>
+              Carpetas
+            </Button>
+            <div>
+              <h2 id="library-content-heading">{selectedPathLabel}</h2>
+              <p>{directories.length} carpetas, {entries.length - directories.length} archivos</p>
+            </div>
+          </div>
+
+          <nav aria-label="Ruta actual" className="breadcrumbs">
+            {breadcrumbs(currentPath).map((crumb, index) => (
+              <button key={crumb.path || "root"} type="button" onClick={() => openDirectory(crumb.path)}>
+                {index === 0 ? "Inicio" : crumb.label}
+              </button>
+            ))}
+          </nav>
+
+          <div className="library-commandbar">
+            <Button variant="secondary" disabled={!currentPath} onClick={() => openDirectory(parentPath(currentPath))}>
+              Subir
+            </Button>
+            <Button
+              variant="primary"
+              disabled={!selectedProfileId}
+              onClick={() => {
+                setDestinationPath(currentPath);
+                navigate("/downloads");
+              }}
+            >
+              Seleccionar esta carpeta
+            </Button>
+            <Button
+              variant="secondary"
+              disabled={!selectedProfileId || isMutating}
+              onClick={() => {
+                setClientError("");
+                setSuccessMessage("");
+                setIsCreatingDirectory(true);
+              }}
+            >
+              Crear carpeta
+            </Button>
+            <ActionMenu
+              entry={selectedEntry}
+              disabled={isMutating}
+              onOpen={() => selectedEntry?.type === "directory" && openDirectory(selectedEntry.path)}
+              onRename={() => {
+                if (!selectedEntry) return;
+                setClientError("");
+                setSuccessMessage("");
+                setRenamingEntry(selectedEntry);
+                setRenameValue(selectedEntry.name);
+              }}
+              onMove={() => {
+                if (!selectedEntry) return;
+                setClientError("");
+                setSuccessMessage("");
+                setMovingEntry(selectedEntry);
+                setMoveTargetPath("");
+              }}
+              onTrash={() => {
+                if (!selectedEntry) return;
+                const confirmed = window.confirm(
+                  `La entrada se moverá a la papelera interna del perfil. ¿Continuar con ${selectedEntry.name}?`,
+                );
+                if (!confirmed) return;
+                setClientError("");
+                setSuccessMessage("");
+                trashMutation.mutate(selectedEntry.path);
+              }}
+            />
+          </div>
+
+          {isCreatingDirectory ? (
+            <form
+              className="inline-form create-folder-form"
+              aria-label="Crear carpeta"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const validationError = validateEntryName(directoryName);
+                if (validationError) {
+                  setClientError(validationError);
+                  return;
+                }
+                setClientError("");
+                setSuccessMessage("");
+                createDirectoryMutation.mutate();
+              }}
+            >
+              <Field label="Nombre de la carpeta">
+                <TextInput value={directoryName} onChange={(event) => setDirectoryName(event.target.value)} autoFocus />
+              </Field>
+              <Button type="submit" disabled={isMutating}>Crear</Button>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={isMutating}
+                onClick={() => {
+                  setIsCreatingDirectory(false);
+                  setDirectoryName("");
+                  setClientError("");
+                }}
+              >
+                Cancelar
+              </Button>
+            </form>
+          ) : null}
+
+          {entriesQuery.isLoading ? <Skeleton label="Cargando biblioteca" /> : null}
+          {entriesQuery.isError ? (
+            <StatusMessage tone="error">{getUserErrorMessage(entriesQuery.error)}</StatusMessage>
+          ) : null}
+          {!entriesQuery.isLoading && selectedProfileId && entries.length === 0 ? (
+            <EmptyState title="Carpeta vacía">
+              Crea una carpeta, selecciona este destino o vuelve a una carpeta superior.
+            </EmptyState>
+          ) : null}
+          {entries.length > 0 ? (
+            <EntryGrid
+              entries={entries}
+              selectedEntryPath={selectedEntryPath}
+              onSelect={setSelectedEntryPath}
+              onOpenDirectory={openDirectory}
+            />
+          ) : null}
+        </Card>
       </div>
 
-      <nav aria-label="Ruta actual" className="breadcrumbs">
-        {breadcrumbs(currentPath).map((crumb, index) => (
-          <button key={crumb.path || "root"} type="button" onClick={() => setCurrentPath(crumb.path)}>
-            {index === 0 ? "/" : crumb.label}
-          </button>
-        ))}
-      </nav>
+      {isTreeOpen ? <button className="drawer-scrim" aria-label="Cerrar carpetas" onClick={() => setIsTreeOpen(false)} /> : null}
 
-      {currentPath ? (
-        <button type="button" className="link-button" onClick={() => setCurrentPath(parentPath(currentPath))}>
-          Subir un nivel
-        </button>
-      ) : null}
-
-      {entriesQuery.isLoading ? <p>Cargando biblioteca...</p> : null}
-      {entriesQuery.isError ? (
-        <StatusMessage tone="error">{getUserErrorMessage(entriesQuery.error)}</StatusMessage>
-      ) : null}
-      {!entriesQuery.isLoading && selectedProfileId && entries.length === 0 ? (
-        <p>Esta carpeta está vacía.</p>
-      ) : null}
-      {entries.length > 0 ? (
-        <EntryList
-          entries={entries}
-          editingEntryPath={editingEntryPath}
-          editingEntryName={editingEntryName}
+      {renamingEntry ? (
+        <RenameDialog
+          entry={renamingEntry}
+          value={renameValue}
           isMutating={isMutating}
-          onOpenDirectory={setCurrentPath}
-          onRenameStart={(entry) => {
-            setClientError("");
-            setSuccessMessage("");
-            setEditingEntryPath(entry.path);
-            setEditingEntryName(entry.name);
-          }}
-          onRenameCancel={() => {
-            setEditingEntryPath("");
-            setEditingEntryName("");
+          onChange={setRenameValue}
+          onCancel={() => {
+            setRenamingEntry(null);
+            setRenameValue("");
             setClientError("");
           }}
-          onRenameNameChange={setEditingEntryName}
-          onRenameSubmit={(entry) => {
-            const validationError = validateEntryName(editingEntryName);
+          onConfirm={() => {
+            const validationError = validateEntryName(renameValue);
             if (validationError) {
               setClientError(validationError);
               return;
             }
             setClientError("");
             setSuccessMessage("");
-            renameMutation.mutate({ path: entry.path, newName: editingEntryName.trim() });
-          }}
-          onTrash={(entry) => {
-            const confirmed = window.confirm(
-              `La entrada se moverá a la papelera interna del perfil. ¿Continuar con ${entry.name}?`,
-            );
-            if (!confirmed) {
-              return;
-            }
-            setClientError("");
-            setSuccessMessage("");
-            trashMutation.mutate(entry.path);
-          }}
-          onMoveStart={(entry) => {
-            setClientError("");
-            setSuccessMessage("");
-            setMovingEntry(entry);
-            setMoveTargetPath("");
+            renameMutation.mutate({ path: renamingEntry.path, newName: renameValue.trim() });
           }}
         />
       ) : null}
+
       {movingEntry ? (
         <MoveDialog
           entry={movingEntry}
@@ -322,91 +385,260 @@ export function LibraryPage() {
           }}
         />
       ) : null}
-    </section>
+    </div>
   );
 }
 
-function EntryList({
+function FolderTree({
+  profileId,
+  currentPath,
+  expandedPaths,
+  onSelect,
+  onToggle,
+}: {
+  profileId: string;
+  currentPath: string;
+  expandedPaths: Set<string>;
+  onSelect: (path: string) => void;
+  onToggle: (path: string) => void;
+}) {
+  if (!profileId) {
+    return <EmptyState title="Sin perfil">Selecciona un perfil para ver sus carpetas.</EmptyState>;
+  }
+  return (
+    <ul className="folder-tree" aria-label="Carpetas de biblioteca">
+      <FolderNode
+        profileId={profileId}
+        path=""
+        name="Inicio"
+        level={0}
+        currentPath={currentPath}
+        expandedPaths={expandedPaths}
+        onSelect={onSelect}
+        onToggle={onToggle}
+      />
+    </ul>
+  );
+}
+
+function FolderNode({
+  profileId,
+  path,
+  name,
+  level,
+  currentPath,
+  expandedPaths,
+  onSelect,
+  onToggle,
+}: {
+  profileId: string;
+  path: string;
+  name: string;
+  level: number;
+  currentPath: string;
+  expandedPaths: Set<string>;
+  onSelect: (path: string) => void;
+  onToggle: (path: string) => void;
+}) {
+  const isExpanded = expandedPaths.has(path);
+  const query = useQuery({
+    queryKey: ["library", profileId, path],
+    queryFn: () => getLibraryEntries(profileId, path),
+    enabled: Boolean(profileId && isExpanded),
+  });
+  const directories = (query.data?.entries ?? []).filter((entry) => entry.type === "directory");
+
+  return (
+    <li>
+      <div className="folder-node" style={{ paddingLeft: `${level * 12}px` }}>
+        <button
+          type="button"
+          className="folder-chevron"
+          aria-label={isExpanded ? `Contraer ${name}` : `Expandir ${name}`}
+          aria-expanded={isExpanded}
+          onClick={() => onToggle(path)}
+        >
+          <span aria-hidden="true">{isExpanded ? "▾" : "▸"}</span>
+        </button>
+        <button
+          type="button"
+          className={currentPath === path ? "folder-label folder-label--active" : "folder-label"}
+          onClick={() => onSelect(path)}
+        >
+          <span aria-hidden="true">📁</span>
+          {name}
+        </button>
+      </div>
+      {isExpanded ? (
+        <div className="folder-children">
+          {query.isLoading ? <span className="tree-loading">Cargando...</span> : null}
+          {directories.length > 0 ? (
+            <ul>
+              {directories.map((directory) => (
+                <FolderNode
+                  key={directory.path}
+                  profileId={profileId}
+                  path={directory.path}
+                  name={directory.name}
+                  level={level + 1}
+                  currentPath={currentPath}
+                  expandedPaths={expandedPaths}
+                  onSelect={onSelect}
+                  onToggle={onToggle}
+                />
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+function EntryGrid({
   entries,
-  editingEntryPath,
-  editingEntryName,
-  isMutating,
+  selectedEntryPath,
+  onSelect,
   onOpenDirectory,
-  onRenameStart,
-  onRenameCancel,
-  onRenameNameChange,
-  onRenameSubmit,
-  onTrash,
-  onMoveStart,
 }: {
   entries: LibraryEntry[];
-  editingEntryPath: string;
-  editingEntryName: string;
-  isMutating: boolean;
+  selectedEntryPath: string;
+  onSelect: (path: string) => void;
   onOpenDirectory: (path: string) => void;
-  onRenameStart: (entry: LibraryEntry) => void;
-  onRenameCancel: () => void;
-  onRenameNameChange: (name: string) => void;
-  onRenameSubmit: (entry: LibraryEntry) => void;
-  onTrash: (entry: LibraryEntry) => void;
-  onMoveStart: (entry: LibraryEntry) => void;
 }) {
   return (
-    <ul className="entry-list" aria-label="Contenido de la carpeta">
+    <div className="entry-grid" aria-label="Contenido de la carpeta" role="list">
       {entries.map((entry) => (
-        <li key={entry.path}>
-          <div className="entry-row">
-            {entry.type === "directory" ? (
-              <button type="button" className="entry-button" onClick={() => onOpenDirectory(entry.path)}>
-                <span aria-hidden="true">[Carpeta]</span>
-                <span>{entry.name}</span>
-                <span className="muted">{displayPath(entry.path)}</span>
-              </button>
-            ) : (
-              <div className="entry-file">
-                <span aria-hidden="true">[Archivo]</span>
-                <span>{entry.name}</span>
-                <span className="muted">
-                  {entry.size_bytes === null ? "Tamaño no disponible" : formatBytes(entry.size_bytes)}
-                </span>
-              </div>
-            )}
-            <div className="entry-actions">
-              <button type="button" className="button button-secondary" disabled={isMutating} onClick={() => onRenameStart(entry)}>
-                Renombrar
-              </button>
-              <button type="button" className="button button-danger" disabled={isMutating} onClick={() => onTrash(entry)}>
-                Enviar a papelera
-              </button>
-              <button type="button" className="button button-secondary" disabled={isMutating} onClick={() => onMoveStart(entry)}>
-                Mover
-              </button>
-            </div>
-            {editingEntryPath === entry.path ? (
-              <form
-                className="inline-form entry-rename-form"
-                aria-label={`Renombrar ${entry.name}`}
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  onRenameSubmit(entry);
-                }}
-              >
-                <label className="field">
-                  <span>Nuevo nombre</span>
-                  <input value={editingEntryName} onChange={(event) => onRenameNameChange(event.target.value)} />
-                </label>
-                <button type="submit" className="button" disabled={isMutating}>
-                  Guardar
-                </button>
-                <button type="button" className="button button-secondary" disabled={isMutating} onClick={onRenameCancel}>
-                  Cancelar
-                </button>
-              </form>
-            ) : null}
-          </div>
-        </li>
+        <button
+          type="button"
+          role="listitem"
+          key={entry.path}
+          aria-label={`Seleccionar ${entry.name}`}
+          className={selectedEntryPath === entry.path ? "entry-card entry-card--selected" : "entry-card"}
+          onClick={() => onSelect(entry.path)}
+          onDoubleClick={() => entry.type === "directory" && onOpenDirectory(entry.path)}
+        >
+          <span className="entry-icon" aria-hidden="true">{entry.type === "directory" ? "📁" : "♪"}</span>
+          <span className="entry-name">{entry.name}</span>
+          <span className="entry-meta">
+            {entry.type === "directory" ? "Carpeta" : `Archivo · ${formatBytes(entry.size_bytes)}`}
+          </span>
+          <span className="entry-path">{displayPath(entry.path)}</span>
+        </button>
       ))}
-    </ul>
+    </div>
+  );
+}
+
+function ActionMenu({
+  entry,
+  disabled,
+  onOpen,
+  onRename,
+  onMove,
+  onTrash,
+}: {
+  entry: LibraryEntry | null;
+  disabled: boolean;
+  onOpen: () => void;
+  onRename: () => void;
+  onMove: () => void;
+  onTrash: () => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [isOpen]);
+
+  const run = (callback: () => void) => {
+    callback();
+    setIsOpen(false);
+  };
+
+  return (
+    <div className="action-menu" ref={menuRef}>
+      <Button
+        type="button"
+        variant="secondary"
+        disabled={!entry || disabled}
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
+        onClick={() => setIsOpen((value) => !value)}
+      >
+        Acciones...
+      </Button>
+      {isOpen && entry ? (
+        <div className="action-menu-panel" role="menu">
+          {entry.type === "directory" ? (
+            <button type="button" role="menuitem" onClick={() => run(onOpen)}>Abrir carpeta</button>
+          ) : null}
+          <button type="button" role="menuitem" onClick={() => run(onRename)}>Renombrar</button>
+          <button type="button" role="menuitem" onClick={() => run(onMove)}>Mover</button>
+          <button type="button" role="menuitem" className="danger-item" onClick={() => run(onTrash)}>
+            Enviar a papelera
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function RenameDialog({
+  entry,
+  value,
+  isMutating,
+  onChange,
+  onCancel,
+  onConfirm,
+}: {
+  entry: LibraryEntry;
+  value: string;
+  isMutating: boolean;
+  onChange: (value: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="dialog-backdrop">
+      <form
+        className="dialog-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="rename-dialog-heading"
+        aria-label={`Renombrar ${entry.name}`}
+        onSubmit={(event) => {
+          event.preventDefault();
+          onConfirm();
+        }}
+      >
+        <h3 id="rename-dialog-heading">Renombrar entrada</h3>
+        <Field label="Nuevo nombre">
+          <TextInput value={value} onChange={(event) => onChange(event.target.value)} autoFocus />
+        </Field>
+        <div className="dialog-actions">
+          <Button type="button" variant="secondary" disabled={isMutating} onClick={onCancel}>Cancelar</Button>
+          <Button type="submit" disabled={isMutating}>Guardar</Button>
+        </div>
+      </form>
+    </div>
   );
 }
 
@@ -433,114 +665,83 @@ function MoveDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const dialogRef = useRef<HTMLDivElement>(null);
   const directories = entries.filter((item) => item.type === "directory");
-
-  useEffect(() => {
-    dialogRef.current?.focus();
-  }, []);
 
   return (
     <div className="dialog-backdrop">
-      <div
-        className="dialog-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="move-dialog-heading"
-        tabIndex={-1}
-        ref={dialogRef}
-      >
+      <div className="dialog-panel" role="dialog" aria-modal="true" aria-labelledby="move-dialog-heading" tabIndex={-1}>
         <h3 id="move-dialog-heading">Mover entrada</h3>
         <p>
-          Mover <strong>"{entry.name}"</strong> a <strong>{displayPath(currentTargetPath)}</strong>
+          Mover <strong>{entry.name}</strong> a <strong>{displayPath(currentTargetPath)}</strong>
         </p>
-        <div className="current-location">
-          <p>
-            <strong>Destino actual:</strong> {displayPath(currentTargetPath)}
-          </p>
-        </div>
         <nav aria-label="Ruta de destino" className="breadcrumbs">
           {breadcrumbs(currentTargetPath).map((crumb, index) => (
             <button key={crumb.path || "root"} type="button" disabled={isMutating} onClick={() => onNavigate(crumb.path)}>
-              {index === 0 ? "/" : crumb.label}
+              {index === 0 ? "Inicio" : crumb.label}
             </button>
           ))}
         </nav>
-        <button type="button" className="button button-secondary" disabled={isMutating} onClick={() => onNavigate("")}>
-          Volver a la raíz del selector
-        </button>
-        {currentTargetPath ? (
-          <button type="button" className="link-button" disabled={isMutating} onClick={() => onNavigate(parentPath(currentTargetPath))}>
-            Subir un nivel en selector
-          </button>
-        ) : null}
-        {isLoading ? <p>Cargando carpetas destino...</p> : null}
+        <div className="library-commandbar">
+          <Button variant="secondary" disabled={!currentTargetPath || isMutating} onClick={() => onNavigate(parentPath(currentTargetPath))}>
+            Subir
+          </Button>
+          <Button variant="secondary" disabled={isMutating} onClick={() => onNavigate("")}>Raíz</Button>
+        </div>
+        {isLoading ? <Skeleton label="Cargando carpetas destino" /> : null}
         {error ? <StatusMessage tone="error">{getUserErrorMessage(error)}</StatusMessage> : null}
         {validationMessage ? <StatusMessage tone="info">{validationMessage}</StatusMessage> : null}
-        <ul className="entry-list" aria-label="Carpetas destino disponibles">
+        <div className="entry-grid entry-grid--compact" aria-label="Carpetas destino disponibles">
           {directories.map((directory) => (
-            <li key={directory.path}>
-              <button
-                type="button"
-                className="entry-button"
-                disabled={isMutating || isForbiddenMoveTarget(entry, directory.path)}
-                onClick={() => onNavigate(directory.path)}
-              >
-                <span aria-hidden="true">[Carpeta]</span>
-                <span>{directory.name}</span>
-                <span className="muted">{displayPath(directory.path)}</span>
-              </button>
-            </li>
+            <button
+              type="button"
+              key={directory.path}
+              className="entry-card"
+              disabled={isMutating || isForbiddenMoveTarget(entry, directory.path)}
+              onClick={() => onNavigate(directory.path)}
+            >
+              <span className="entry-icon" aria-hidden="true">📁</span>
+              <span className="entry-name">{directory.name}</span>
+              <span className="entry-path">{displayPath(directory.path)}</span>
+            </button>
           ))}
-        </ul>
-        {directories.length === 0 && !isLoading ? <p>No hay subcarpetas en este destino.</p> : null}
+        </div>
+        {directories.length === 0 && !isLoading ? <EmptyState title="Sin subcarpetas">Puedes mover aquí o subir de nivel.</EmptyState> : null}
         <div className="dialog-actions">
-          <button type="button" className="button button-secondary" disabled={isMutating} onClick={onCancel}>
-            Cancelar
-          </button>
-          <button type="button" className="button" disabled={isMutating || Boolean(validationMessage)} onClick={onConfirm}>
+          <Button type="button" variant="secondary" disabled={isMutating} onClick={onCancel}>Cancelar</Button>
+          <Button type="button" disabled={isMutating || Boolean(validationMessage)} onClick={onConfirm}>
             {isMutating ? "Moviendo..." : "Mover aquí"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
   );
 }
 
+async function invalidateLibrary(queryClient: ReturnType<typeof useQueryClient>, profileId: string, path: string) {
+  await queryClient.invalidateQueries({ queryKey: ["library", profileId, path] });
+}
+
 function validateEntryName(value: string): string {
   const name = value.trim();
-  if (!name) {
-    return "El nombre es obligatorio.";
-  }
-  if (name.includes("/") || name.includes("\\")) {
-    return "El nombre no puede contener separadores de ruta.";
-  }
-  if (name === "." || name === ".." || name.startsWith(".")) {
-    return "El nombre no puede ser oculto ni reservado.";
-  }
+  if (!name) return "El nombre es obligatorio.";
+  if (name.includes("/") || name.includes("\\")) return "El nombre no puede contener separadores de ruta.";
+  if (name === "." || name === ".." || name.startsWith(".")) return "El nombre no puede ser oculto ni reservado.";
   return "";
 }
 
 function getMoveValidationMessage(entry: LibraryEntry, targetPath: string): string {
-  if (targetPath === parentPath(entry.path)) {
-    return "La entrada ya se encuentra en esta carpeta.";
-  }
-  if (isForbiddenMoveTarget(entry, targetPath)) {
-    return "No se puede mover una carpeta dentro de sí misma.";
-  }
+  if (targetPath === parentPath(entry.path)) return "La entrada ya se encuentra en esta carpeta.";
+  if (isForbiddenMoveTarget(entry, targetPath)) return "No se puede mover una carpeta dentro de sí misma.";
   return "";
 }
 
 function isForbiddenMoveTarget(entry: LibraryEntry, targetPath: string): boolean {
-  if (entry.type !== "directory") {
-    return false;
-  }
+  if (entry.type !== "directory") return false;
   return targetPath === entry.path || targetPath.startsWith(`${entry.path}/`);
 }
 
-function formatBytes(value: number): string {
-  if (value < 1024) {
-    return `${value} B`;
-  }
+function formatBytes(value: number | null): string {
+  if (value === null) return "Tamaño no disponible";
+  if (value < 1024) return `${value} B`;
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }

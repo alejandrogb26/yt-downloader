@@ -1,4 +1,5 @@
 import type { Profile } from "../api/types";
+import { SelectControl } from "./ui";
 
 type ProfileSelectProps = {
   profiles: Profile[];
@@ -16,7 +17,7 @@ export function ProfileSelect({
   return (
     <label className="field">
       <span>Perfil</span>
-      <select
+      <SelectControl
         value={value}
         disabled={disabled || profiles.length === 0}
         onChange={(event) => onChange(event.target.value)}
@@ -27,7 +28,7 @@ export function ProfileSelect({
             {profile.display_name}
           </option>
         ))}
-      </select>
+      </SelectControl>
     </label>
   );
 }

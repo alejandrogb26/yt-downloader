@@ -3,6 +3,7 @@ import { useState } from "react";
 import { RouterProvider } from "react-router-dom";
 
 import { SelectionProvider } from "./SelectionContext";
+import { ThemeProvider } from "./ThemeContext";
 import { createQueryClient } from "./query-client";
 import { createAppRouter } from "./router";
 
@@ -12,9 +13,11 @@ export function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <SelectionProvider>
-        <RouterProvider router={router} />
-      </SelectionProvider>
+      <ThemeProvider>
+        <SelectionProvider>
+          <RouterProvider router={router} />
+        </SelectionProvider>
+      </ThemeProvider>
     </QueryClientProvider>
   );
 }

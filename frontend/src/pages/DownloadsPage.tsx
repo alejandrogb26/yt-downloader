@@ -8,7 +8,14 @@ import type { DownloadJobListItem, Profile } from "../api/types";
 import { useSelection } from "../app/SelectionContext";
 import { ProfileSelect } from "../components/ProfileSelect";
 import { StatusMessage } from "../components/StatusMessage";
-import { formatProgress, getStatusLabel, shouldPoll } from "../features/downloads/status";
+import { Card, EmptyState, Field, SelectControl, Skeleton, TextInput } from "../components/ui";
+import {
+  formatProgress,
+  getStatusIcon,
+  getStatusLabel,
+  getStatusTone,
+  shouldPoll,
+} from "../features/downloads/status";
 import { displayPath } from "../features/library/path";
 
 type JobScope = "profile" | "all";
@@ -55,129 +62,203 @@ export function DownloadsPage() {
   const jobs = downloadsQuery.data?.items ?? [];
 
   return (
-    <div className="page-grid">
-      <section className="panel" aria-labelledby="new-download-heading">
-        <h2 id="new-download-heading">Nueva descarga</h2>
-        {profilesQuery.isLoading ? <p>Cargando perfiles...</p> : null}
-        {profilesQuery.isError ? (
-          <StatusMessage tone="error">{getUserErrorMessage(profilesQuery.error)}</StatusMessage>
-        ) : null}
-        {!profilesQuery.isLoading && profiles.length === 0 ? (
-          <StatusMessage tone="info">
-            No hay perfiles disponibles. No se pueden crear trabajos.
-          </StatusMessage>
-        ) : null}
-        <form
-          className="form-stack"
-          onSubmit={(event) => {
-            event.preventDefault();
-            setSuccessMessage("");
-            createMutation.mutate({
-              profile_id: selectedProfileId,
-              source_url: sourceUrl.trim(),
-              destination_path: destinationPath,
-            });
-          }}
-        >
+    <div className="downloads-page">
+      <section className="page-hero">
+        <div>
+          <p className="eyebrow">Cola de audio</p>
+          <h2>Nueva descarga y seguimiento</h2>
+          <p>
+            Añade enlaces de YouTube a la cola, elige una carpeta destino y revisa el estado
+            de los últimos trabajos sin salir de la pantalla.
+          </p>
+        </div>
+        <div className="hero-profile">
           <ProfileSelect
             profiles={profiles}
             value={selectedProfileId}
             onChange={setSelectedProfileId}
+            disabled={profilesQuery.isLoading}
           />
-          <label className="field">
-            <span>URL</span>
-            <input
-              value={sourceUrl}
-              onChange={(event) => setSourceUrl(event.target.value)}
-              placeholder="https://www.youtube.com/watch?v=VIDEO_ID"
-            />
-          </label>
-          <div className="selected-destination">
-            <p>
-              <strong>Perfil:</strong> {selectedProfile?.display_name ?? "Sin perfil"}
-            </p>
-            <p>
-              <strong>Destino:</strong> {displayPath(destinationPath)}
-            </p>
-            <Link className="button button-secondary" to={selectLibraryLink}>
-              Elegir carpeta en biblioteca
-            </Link>
-          </div>
-          <button className="button" type="submit" disabled={!canCreate || createMutation.isPending}>
-            Crear trabajo
-          </button>
-        </form>
-        {successMessage ? <StatusMessage tone="success">{successMessage}</StatusMessage> : null}
-        {createMutation.isError ? (
-          <StatusMessage tone="error">{getUserErrorMessage(createMutation.error)}</StatusMessage>
-        ) : null}
+        </div>
       </section>
 
-      <section className="panel panel-wide" aria-labelledby="downloads-heading">
-        <div className="panel-heading-row">
-          <h2 id="downloads-heading">Trabajos recientes</h2>
-          <label className="inline-field">
-            <span>Mostrar</span>
-            <select value={jobScope} onChange={(event) => setJobScope(event.target.value as JobScope)}>
-              <option value="profile">Perfil actual</option>
-              <option value="all">Todos los perfiles</option>
-            </select>
-          </label>
-        </div>
-        {downloadsQuery.isLoading ? <p>Cargando trabajos...</p> : null}
-        {downloadsQuery.isError ? (
-          <StatusMessage tone="error">{getUserErrorMessage(downloadsQuery.error)}</StatusMessage>
-        ) : null}
-        {!downloadsQuery.isLoading && jobs.length === 0 ? <p>No hay trabajos para mostrar.</p> : null}
-        {jobs.length > 0 ? <DownloadsTable jobs={jobs} profiles={profiles} /> : null}
-      </section>
+      {profilesQuery.isError ? (
+        <StatusMessage tone="error">{getUserErrorMessage(profilesQuery.error)}</StatusMessage>
+      ) : null}
+      {!profilesQuery.isLoading && profiles.length === 0 ? (
+        <StatusMessage tone="info">No hay perfiles disponibles. No se pueden crear trabajos.</StatusMessage>
+      ) : null}
+
+      <div className="downloads-grid">
+        <Card className="new-download-card" aria-labelledby="new-download-heading">
+          <div className="card-heading">
+            <div>
+              <h2 id="new-download-heading">Nueva descarga</h2>
+              <p>URL, perfil y destino antes de enviar a la cola.</p>
+            </div>
+            <span className="action-dot" aria-hidden="true">●</span>
+          </div>
+
+          {profilesQuery.isLoading ? <Skeleton label="Cargando perfiles" /> : null}
+
+          <form
+            className="download-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setSuccessMessage("");
+              createMutation.mutate({
+                profile_id: selectedProfileId,
+                source_url: sourceUrl.trim(),
+                destination_path: destinationPath,
+              });
+            }}
+          >
+            <Field label="URL" hint="Acepta URLs de vídeo de YouTube compatibles con el backend.">
+              <TextInput
+                value={sourceUrl}
+                onChange={(event) => setSourceUrl(event.target.value)}
+                placeholder="https://www.youtube.com/watch?v=VIDEO_ID"
+                inputMode="url"
+              />
+            </Field>
+
+            <div className="destination-card" aria-live="polite">
+              <span>Destino seleccionado</span>
+              <strong>{displayPath(destinationPath)}</strong>
+              <small>{selectedProfile?.display_name ?? "Sin perfil seleccionado"}</small>
+              <Link className="button button--secondary" to={selectLibraryLink}>
+                Elegir carpeta en biblioteca
+              </Link>
+            </div>
+
+            <button
+              className="button button--primary button--wide"
+              type="submit"
+              disabled={!canCreate || createMutation.isPending}
+            >
+              {createMutation.isPending ? "Añadiendo..." : "Añadir a la cola"}
+            </button>
+          </form>
+
+          {successMessage ? <StatusMessage tone="success">{successMessage}</StatusMessage> : null}
+          {createMutation.isError ? (
+            <StatusMessage tone="error">{getUserErrorMessage(createMutation.error)}</StatusMessage>
+          ) : null}
+        </Card>
+
+        <Card className="jobs-card" aria-labelledby="downloads-heading">
+          <div className="list-toolbar">
+            <div>
+              <h2 id="downloads-heading">Trabajos recientes</h2>
+              <p>{downloadsQuery.data?.total ?? jobs.length} trabajos visibles</p>
+            </div>
+            <label className="inline-field">
+              <span>Mostrar</span>
+              <SelectControl value={jobScope} onChange={(event) => setJobScope(event.target.value as JobScope)}>
+                <option value="profile">Perfil actual</option>
+                <option value="all">Todos los perfiles</option>
+              </SelectControl>
+            </label>
+          </div>
+
+          {downloadsQuery.isLoading ? <Skeleton label="Cargando trabajos" /> : null}
+          {downloadsQuery.isError ? (
+            <StatusMessage tone="error">{getUserErrorMessage(downloadsQuery.error)}</StatusMessage>
+          ) : null}
+          {!downloadsQuery.isLoading && jobs.length === 0 ? (
+            <EmptyState title="No hay descargas todavía">
+              Crea un trabajo nuevo para empezar a poblar la cola de este perfil.
+            </EmptyState>
+          ) : null}
+          {jobs.length > 0 ? <DownloadsList jobs={jobs} profiles={profiles} /> : null}
+        </Card>
+      </div>
     </div>
   );
 }
 
-function DownloadsTable({ jobs, profiles }: { jobs: DownloadJobListItem[]; profiles: Profile[] }) {
+function DownloadsList({ jobs, profiles }: { jobs: DownloadJobListItem[]; profiles: Profile[] }) {
   const profileNames = useMemo(
     () => new Map(profiles.map((profile) => [profile.id, profile.display_name])),
     [profiles],
   );
+
   return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">Trabajo</th>
-            <th scope="col">Perfil</th>
-            <th scope="col">Destino</th>
-            <th scope="col">Estado</th>
-            <th scope="col">Progreso</th>
-            <th scope="col">Creado</th>
-            <th scope="col">Resultado</th>
-          </tr>
-        </thead>
-        <tbody>
-          {jobs.map((job) => (
-            <tr key={job.id}>
-              <td>{job.title ?? truncateSource(job.source_url)}</td>
-              <td>{profileNames.get(job.profile_id) ?? job.profile_id}</td>
-              <td>{displayPath(job.destination_path)}</td>
-              <td>
-                <span className={`status-pill status-pill--${job.status}`}>
-                  {getStatusLabel(job.status)}
-                </span>
-              </td>
-              <td>{formatProgress(job.progress_percent)}</td>
-              <td>{formatDate(job.created_at)}</td>
-              <td>{job.output_path ? displayPath(job.output_path) : "Pendiente"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="downloads-table" role="table" aria-label="Trabajos de descarga">
+      <div className="downloads-row downloads-row--head" role="row">
+        <span role="columnheader">Estado</span>
+        <span role="columnheader">Trabajo</span>
+        <span role="columnheader">Destino</span>
+        <span role="columnheader">Formato</span>
+        <span role="columnheader">Tiempo</span>
+        <span role="columnheader">Resultado</span>
+      </div>
+      {jobs.map((job) => (
+        <article className="downloads-row" role="row" key={job.id}>
+          <div className="job-status-cell" role="cell">
+            <StatusPill job={job} />
+            <ProgressBar progress={job.progress_percent} />
+          </div>
+          <div className="job-main" role="cell">
+            <strong>{job.title ?? truncateSource(job.source_url)}</strong>
+            <span>{profileNames.get(job.profile_id) ?? job.profile_id}</span>
+          </div>
+          <div role="cell" data-label="Destino">
+            {displayPath(job.destination_path)}
+          </div>
+          <div role="cell" data-label="Formato">
+            <span className="muted">No disponible en listado</span>
+          </div>
+          <div role="cell" data-label="Tiempo">
+            {formatJobTime(job)}
+          </div>
+          <div role="cell" data-label="Resultado">
+            {job.output_path ? displayPath(job.output_path) : <span className="muted">Pendiente</span>}
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function StatusPill({ job }: { job: DownloadJobListItem }) {
+  const tone = getStatusTone(job.status);
+  return (
+    <span className={`status-pill status-pill--${tone}`}>
+      <span aria-hidden="true">{getStatusIcon(job.status)}</span>
+      {getStatusLabel(job.status)}
+      <span className="sr-only">, progreso {formatProgress(job.progress_percent)}</span>
+    </span>
+  );
+}
+
+function ProgressBar({ progress }: { progress: number | null }) {
+  const value = progress ?? 0;
+  return (
+    <div className="progress-wrap">
+      <div
+        className={progress === null ? "progress progress--unknown" : "progress"}
+        aria-hidden="true"
+      >
+        <span style={{ width: `${Math.max(0, Math.min(value, 100))}%` }} />
+      </div>
+      <small>{formatProgress(progress)}</small>
     </div>
   );
 }
 
 function truncateSource(sourceUrl: string): string {
-  return sourceUrl.length > 56 ? `${sourceUrl.slice(0, 53)}...` : sourceUrl;
+  return sourceUrl.length > 62 ? `${sourceUrl.slice(0, 59)}...` : sourceUrl;
+}
+
+function formatJobTime(job: DownloadJobListItem): string {
+  if (job.finished_at) {
+    return `Terminó ${formatDate(job.finished_at)}`;
+  }
+  if (job.started_at) {
+    return `Empezó ${formatDate(job.started_at)}`;
+  }
+  return `Creado ${formatDate(job.created_at)}`;
 }
 
 function formatDate(value: string): string {
