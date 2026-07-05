@@ -17,6 +17,7 @@ from yt_downloader_api.models.profiles import LibraryProfile
 from yt_downloader_api.services.download_execution import (
     ProgressReporter,
     StagingConfigurationError,
+    build_requested_download_filename,
     build_safe_download_filename,
     calculate_progress_percent,
     execute_download_job,
@@ -183,6 +184,7 @@ class FailingDownloader:
 def make_job(
     root: Path,
     destination_relative_path: str = "Rock",
+    requested_filename: str | None = None,
 ) -> DownloadJob:
     now = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
     return DownloadJob(
@@ -190,6 +192,7 @@ def make_job(
         profile_id="pepe",
         source_url="https://example.invalid/watch?id=secret",
         destination_relative_path=destination_relative_path,
+        requested_filename=requested_filename,
         audio_policy="prefer_m4a_then_best_source",
         status="running",
         progress_percent=None,
@@ -351,6 +354,13 @@ def test_safe_filename_falls_back_to_audio() -> None:
     assert build_safe_download_filename("/\x00\n", "/", "") == "audio [audio].audio"
 
 
+def test_requested_filename_uses_real_extension_and_no_video_id() -> None:
+    assert (
+        build_requested_download_filename("Sandunga verano", "webm")
+        == "Sandunga verano.webm"
+    )
+
+
 def test_calculates_progress_from_total_bytes_and_estimate() -> None:
     assert (
         calculate_progress_percent({"downloaded_bytes": 50, "total_bytes": 100}) == 50
@@ -421,9 +431,44 @@ def test_publish_download_to_library_uses_hidden_temp_and_collision_suffix(
 
     published = publish_download_to_library(profile, job, result)
 
-    assert published.relative_path == "Rock/Canción [abc123] (2).webm"
-    assert (destination / "Canción [abc123] (2).webm").read_bytes() == b"audio"
+    assert published.relative_path == "Rock/Canción [abc123] (1).webm"
+    assert (destination / "Canción [abc123] (1).webm").read_bytes() == b"audio"
     assert not (destination / f".{job.id}.part").exists()
+
+
+def test_publish_download_to_library_uses_requested_filename_and_collision_suffix(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "library"
+    destination = root / "Rock"
+    destination.mkdir(parents=True)
+    (destination / "Sandunga verano.m4a").write_bytes(b"existing")
+    staged = tmp_path / "staging" / "00000000-0000-4000-8000-000000000001"
+    staged.mkdir(parents=True)
+    source = staged / "00000000-0000-4000-8000-000000000001.m4a"
+    source.write_bytes(b"audio")
+    job = make_job(root, requested_filename="Sandunga verano")
+    result = AudioDownloadResult(
+        title="Remote Title",
+        video_id="abc123",
+        downloaded_file_path=source,
+        source_format_id="140",
+        source_container="m4a",
+        source_audio_codec="aac",
+        output_container="m4a",
+        output_audio_codec="aac",
+    )
+    profile = LibraryProfile(
+        id="pepe",
+        display_name="Pepe",
+        root_path=str(root),
+        enabled=True,
+    )
+
+    published = publish_download_to_library(profile, job, result)
+
+    assert published.relative_path == "Rock/Sandunga verano (1).m4a"
+    assert (destination / "Sandunga verano (1).m4a").read_bytes() == b"audio"
 
 
 def test_execute_download_job_completes_with_fallback_webm_opus(tmp_path: Path) -> None:
@@ -458,7 +503,7 @@ def test_execute_download_job_completes_with_m4a_aac(tmp_path: Path) -> None:
     root = tmp_path / "library"
     (root / "Rock").mkdir(parents=True)
     settings = make_settings(tmp_path, root)
-    job = make_job(root)
+    job = make_job(root, requested_filename="Mi canción")
     staging = Path(settings.download_staging_root) / job.id
     path = staging / f"{job.id}.m4a"
     result = AudioDownloadResult(
@@ -477,7 +522,7 @@ def test_execute_download_job_completes_with_m4a_aac(tmp_path: Path) -> None:
         settings, repository, FakeDownloader(result), job, "worker-1"
     )
 
-    assert job.output_relative_path == "Rock/Song [fJ9rUzIMcZQ].m4a"
+    assert job.output_relative_path == "Rock/Mi canción.m4a"
     assert job.source_container == "m4a"
     assert job.source_audio_codec == "aac"
 

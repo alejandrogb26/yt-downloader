@@ -25,6 +25,10 @@ from yt_downloader_api.services.download_queue import (
     mark_running_job_as_failed,
     update_running_job_progress,
 )
+from yt_downloader_api.services.filenames import (
+    InvalidRequestedFilenameError,
+    validate_requested_filename,
+)
 from yt_downloader_api.services.profiles import (
     ProfilesConfigurationError,
     load_enabled_profile,
@@ -219,9 +223,9 @@ def publish_download_to_library(
         job.destination_relative_path
     )
     target_directory = filesystem.resolve_target_directory(root, target_directory_path)
-    filename = build_safe_download_filename(
-        result.title,
-        result.video_id,
+    filename = build_download_filename(
+        job,
+        result,
         source_path.suffix.removeprefix("."),
     )
     temporary_path = target_directory / f".{job.id}.part"
@@ -281,8 +285,28 @@ def iter_collision_filenames(target_directory: Path, filename: str):
     stem = Path(filename).stem
     suffix = Path(filename).suffix
     yield target_directory / filename
-    for index in range(2, 1000):
+    for index in range(1, 1000):
         yield target_directory / f"{stem} ({index}){suffix}"
+
+
+def build_download_filename(
+    job: DownloadJob,
+    result: AudioDownloadResult,
+    extension: str,
+) -> str:
+    if job.requested_filename is not None:
+        return build_requested_download_filename(job.requested_filename, extension)
+    return build_safe_download_filename(result.title, result.video_id, extension)
+
+
+def build_requested_download_filename(requested_filename: str, extension: str) -> str:
+    try:
+        safe_name = validate_requested_filename(requested_filename)
+    except InvalidRequestedFilenameError as exc:
+        raise OSError("Invalid requested filename") from exc
+    if safe_name is None:
+        raise OSError("Invalid requested filename")
+    return f"{safe_name}.{sanitize_extension(extension)}"
 
 
 def build_safe_download_filename(title: str, video_id: str, extension: str) -> str:

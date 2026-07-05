@@ -20,6 +20,11 @@ from yt_downloader_api.services.downloads import (
     list_download_job_events,
     list_download_jobs,
 )
+from yt_downloader_api.services.filenames import (
+    InvalidRequestedFilenameError,
+    RequestedFilenameHasExtensionError,
+    validate_requested_filename,
+)
 from yt_downloader_api.services.filesystem import (
     DirectoryNotFoundError,
     InvalidDirectoryPathError,
@@ -46,6 +51,10 @@ DIRECTORY_NOT_FOUND_MESSAGE = "Directory not found."
 REQUESTED_PATH_NOT_DIRECTORY_MESSAGE = "Requested path is not a directory."
 PROFILE_STORAGE_UNAVAILABLE_MESSAGE = "Profile storage is unavailable."
 INVALID_SOURCE_URL_MESSAGE = "Invalid source URL."
+INVALID_REQUESTED_FILENAME_MESSAGE = "Invalid requested filename."
+REQUESTED_FILENAME_EXTENSION_MESSAGE = (
+    "No incluyas la extensión del archivo; el sistema la determina automáticamente."
+)
 DOWNLOAD_SERVICE_UNAVAILABLE_MESSAGE = "Download service is unavailable."
 DOWNLOAD_JOB_NOT_FOUND_MESSAGE = "Download job not found."
 
@@ -54,6 +63,7 @@ class CreateDownloadRequest(BaseModel):
     profile_id: str
     source_url: str
     destination_path: str = ""
+    requested_filename: str | None = None
 
 
 class DownloadProfileResponse(BaseModel):
@@ -66,6 +76,7 @@ class DownloadJobResponse(BaseModel):
     profile: DownloadProfileResponse
     source_url: str
     destination_path: str
+    requested_filename: str | None
     audio_policy: str
     status: str
     progress_percent: int | None
@@ -81,6 +92,7 @@ class DownloadJobListItemResponse(BaseModel):
     profile_id: str
     source_url: str
     destination_path: str
+    requested_filename: str | None
     audio_policy: str
     status: str
     progress_percent: int | None
@@ -224,6 +236,19 @@ def create_download(
             detail=INVALID_DIRECTORY_PATH_MESSAGE,
         ) from exc
 
+    try:
+        requested_filename = validate_requested_filename(request.requested_filename)
+    except RequestedFilenameHasExtensionError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=REQUESTED_FILENAME_EXTENSION_MESSAGE,
+        ) from exc
+    except InvalidRequestedFilenameError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=INVALID_REQUESTED_FILENAME_MESSAGE,
+        ) from exc
+
     settings = get_settings()
     try:
         profile = load_enabled_profile(
@@ -271,6 +296,7 @@ def create_download(
             profile=profile,
             source_url=source_url,
             destination_path=destination_path,
+            requested_filename=requested_filename,
         )
     except DownloadPersistenceError as exc:
         raise HTTPException(
@@ -286,6 +312,7 @@ def create_download(
         ),
         source_url=job.source_url,
         destination_path=job.destination_path,
+        requested_filename=job.requested_filename,
         audio_policy=job.audio_policy,
         status=job.status,
         progress_percent=job.progress_percent,
@@ -313,6 +340,7 @@ def to_download_list_item_response(job: DownloadJob) -> DownloadJobListItemRespo
         profile_id=job.profile_id,
         source_url=job.source_url,
         destination_path=job.destination_relative_path,
+        requested_filename=job.requested_filename,
         audio_policy=job.audio_policy,
         status=job.status,
         progress_percent=job.progress_percent,

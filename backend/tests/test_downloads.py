@@ -94,14 +94,18 @@ async def create_download(
     source_url: str = "https://www.youtube.com/watch?v=VIDEO_ID",
     destination_path: str = "",
     profile_id: str = "pepe",
+    requested_filename: str | None = None,
 ) -> httpx.Response:
+    payload = {
+        "profile_id": profile_id,
+        "source_url": source_url,
+        "destination_path": destination_path,
+    }
+    if requested_filename is not None:
+        payload["requested_filename"] = requested_filename
     return await client.post(
         "/api/v1/downloads",
-        json={
-            "profile_id": profile_id,
-            "source_url": source_url,
-            "destination_path": destination_path,
-        },
+        json=payload,
     )
 
 
@@ -127,6 +131,7 @@ async def test_create_download_job_success(
         "profile": {"id": "pepe", "display_name": "Pepe"},
         "source_url": "https://www.youtube.com/watch?v=VIDEO_ID",
         "destination_path": "Rock/Clasicos",
+        "requested_filename": None,
         "audio_policy": "prefer_m4a_then_best_source",
         "status": "queued",
         "progress_percent": None,
@@ -141,6 +146,7 @@ async def test_create_download_job_success(
     assert job.audio_policy == "prefer_m4a_then_best_source"
     assert job.transcode_applied is False
     assert job.destination_relative_path == "Rock/Clasicos"
+    assert job.requested_filename is None
     assert job.progress_percent is None
     assert job.title is None
     assert job.output_relative_path is None
@@ -163,6 +169,72 @@ async def test_create_download_job_success(
         "progress_percent": None,
     }
     assert fake_repository.calls == 1
+
+
+@pytest.mark.anyio
+async def test_create_download_accepts_requested_filename(
+    client: httpx.AsyncClient,
+    fake_repository: FakeDownloadJobRepository,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    library_root = tmp_path / "library"
+    library_root.mkdir()
+    configure_profiles(monkeypatch, tmp_path, [profile_config(library_root)])
+
+    response = await create_download(client, requested_filename="  Sandunga   verano  ")
+
+    assert response.status_code == 201
+    assert response.json()["requested_filename"] == "Sandunga verano"
+    assert fake_repository.jobs[0].requested_filename == "Sandunga verano"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "requested_filename",
+    ["", "   ", "../tema", r"Rock\tema", "\x00", ".", "..", ".oculto", "a" * 181],
+)
+async def test_create_download_rejects_invalid_requested_filename(
+    client: httpx.AsyncClient,
+    fake_repository: FakeDownloadJobRepository,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    requested_filename: str,
+) -> None:
+    library_root = tmp_path / "library"
+    library_root.mkdir()
+    configure_profiles(monkeypatch, tmp_path, [profile_config(library_root)])
+
+    response = await create_download(client, requested_filename=requested_filename)
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Invalid requested filename."}
+    assert fake_repository.jobs == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("requested_filename", ["tema.m4a", "tema.WEBM", "Vol. 2.mp3"])
+async def test_create_download_rejects_requested_filename_with_audio_extension(
+    client: httpx.AsyncClient,
+    fake_repository: FakeDownloadJobRepository,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    requested_filename: str,
+) -> None:
+    library_root = tmp_path / "library"
+    library_root.mkdir()
+    configure_profiles(monkeypatch, tmp_path, [profile_config(library_root)])
+
+    response = await create_download(client, requested_filename=requested_filename)
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": (
+            "No incluyas la extensión del archivo; "
+            "el sistema la determina automáticamente."
+        )
+    }
+    assert fake_repository.jobs == []
 
 
 @pytest.mark.anyio

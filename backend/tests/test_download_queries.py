@@ -96,12 +96,14 @@ def make_job(
     profile_id: str = "pepe",
     status: str = "queued",
     destination_path: str = "Rock",
+    requested_filename: str | None = None,
 ) -> DownloadJob:
     return DownloadJob(
         id=job_id,
         profile_id=profile_id,
         source_url="https://www.youtube.com/watch?v=VIDEO_ID",
         destination_relative_path=destination_path,
+        requested_filename=requested_filename,
         audio_policy="prefer_m4a_then_best_source",
         status=status,
         progress_percent=None,
@@ -163,7 +165,11 @@ async def test_list_downloads_orders_by_created_at_and_id_desc(
     lower_tie_id = "00000000-0000-4000-8000-000000000002"
     higher_tie_id = "00000000-0000-4000-8000-000000000003"
     fake_repository.jobs = [
-        make_job(older_id, now - timedelta(minutes=1)),
+        make_job(
+            older_id,
+            now - timedelta(minutes=1),
+            requested_filename="Sandunga verano",
+        ),
         make_job(lower_tie_id, now),
         make_job(higher_tie_id, now),
     ]
@@ -176,6 +182,8 @@ async def test_list_downloads_orders_by_created_at_and_id_desc(
         lower_tie_id,
         older_id,
     ]
+    older_item = response.json()["items"][2]
+    assert older_item["requested_filename"] == "Sandunga verano"
 
 
 @pytest.mark.anyio
@@ -251,6 +259,7 @@ async def test_get_download_detail(
     job.output_container = "m4a"
     job.output_audio_codec = "aac"
     fake_repository.jobs = [job]
+    job.requested_filename = "Sandunga verano"
 
     response = await client.get(f"/api/v1/downloads/{job_id}")
 
@@ -260,6 +269,7 @@ async def test_get_download_detail(
         "profile_id": "pepe",
         "source_url": "https://www.youtube.com/watch?v=VIDEO_ID",
         "destination_path": "Rock",
+        "requested_filename": "Sandunga verano",
         "audio_policy": "prefer_m4a_then_best_source",
         "status": "queued",
         "progress_percent": None,

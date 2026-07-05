@@ -24,6 +24,8 @@ export function DownloadsPage() {
   const queryClient = useQueryClient();
   const { selectedProfileId, setSelectedProfileId, destinationPath } = useSelection();
   const [sourceUrl, setSourceUrl] = useState("");
+  const [requestedFilename, setRequestedFilename] = useState("");
+  const [filenameError, setFilenameError] = useState("");
   const [jobScope, setJobScope] = useState<JobScope>("profile");
   const [successMessage, setSuccessMessage] = useState("");
 
@@ -53,6 +55,8 @@ export function DownloadsPage() {
     onSuccess: () => {
       setSuccessMessage("Trabajo de descarga creado correctamente.");
       setSourceUrl("");
+      setRequestedFilename("");
+      setFilenameError("");
       void queryClient.invalidateQueries({ queryKey: ["downloads"] });
     },
   });
@@ -106,10 +110,18 @@ export function DownloadsPage() {
             onSubmit={(event) => {
               event.preventDefault();
               setSuccessMessage("");
+              const filenameValidationError = validateRequestedFilename(requestedFilename);
+              if (filenameValidationError) {
+                setFilenameError(filenameValidationError);
+                return;
+              }
+              setFilenameError("");
+              const trimmedFilename = requestedFilename.trim().replace(/\s+/g, " ");
               createMutation.mutate({
                 profile_id: selectedProfileId,
                 source_url: sourceUrl.trim(),
                 destination_path: destinationPath,
+                requested_filename: trimmedFilename || null,
               });
             }}
           >
@@ -121,6 +133,29 @@ export function DownloadsPage() {
                 inputMode="url"
               />
             </Field>
+
+            <Field
+              label="Nombre del archivo"
+              hint="Opcional. No indiques la extensión: se conservará automáticamente el formato de audio disponible."
+            >
+              <TextInput
+                value={requestedFilename}
+                onChange={(event) => {
+                  setRequestedFilename(event.target.value);
+                  if (filenameError) {
+                    setFilenameError(validateRequestedFilename(event.target.value));
+                  }
+                }}
+                placeholder="Ej. Sandunga verano"
+                aria-invalid={Boolean(filenameError)}
+                aria-describedby={filenameError ? "requested-filename-error" : undefined}
+              />
+            </Field>
+            {filenameError ? (
+              <p className="field-error" id="requested-filename-error" role="alert">
+                {filenameError}
+              </p>
+            ) : null}
 
             <div className="destination-card" aria-live="polite">
               <span>Destino seleccionado</span>
@@ -201,6 +236,7 @@ function DownloadsList({ jobs, profiles }: { jobs: DownloadJobListItem[]; profil
           </div>
           <div className="job-main" role="cell">
             <strong>{job.title ?? truncateSource(job.source_url)}</strong>
+            {job.requested_filename ? <em>Nombre solicitado: {job.requested_filename}</em> : null}
             <span>{profileNames.get(job.profile_id) ?? job.profile_id}</span>
           </div>
           <div role="cell" data-label="Destino">
@@ -270,4 +306,31 @@ function formatDate(value: string): string {
     dateStyle: "short",
     timeStyle: "short",
   }).format(date);
+}
+
+function validateRequestedFilename(value: string): string {
+  const cleaned = value.trim().replace(/\s+/g, " ");
+  if (!cleaned) {
+    return "";
+  }
+  if (cleaned.length > 180) {
+    return "El nombre del archivo no puede superar 180 caracteres.";
+  }
+  if (cleaned === "." || cleaned === ".." || cleaned.startsWith(".")) {
+    return "El nombre del archivo no puede ser oculto ni reservado.";
+  }
+  if (
+    cleaned.includes("/") ||
+    cleaned.includes("\\") ||
+    Array.from(cleaned).some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint < 32 || codePoint === 127;
+    })
+  ) {
+    return "El nombre del archivo no puede contener rutas ni caracteres de control.";
+  }
+  if (/\.(m4a|mp4|webm|opus|ogg|mp3|flac|aac)$/iu.test(cleaned)) {
+    return "No incluyas la extensión del archivo; el sistema la determina automáticamente.";
+  }
+  return "";
 }

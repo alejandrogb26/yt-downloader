@@ -82,6 +82,7 @@ describe("frontend rediseñado", () => {
     expect(await screen.findByText("Descargando")).toBeInTheDocument();
     expect(screen.getAllByText("Indeterminado").length).toBeGreaterThan(0);
     expect(screen.getByText("Completada")).toBeInTheDocument();
+    expect(screen.getByText("Nombre solicitado: Sandunga verano")).toBeInTheDocument();
     expect(screen.getByText("En cola")).toBeInTheDocument();
     expect(screen.getByText("Fallida")).toBeInTheDocument();
     expect(screen.getByText("Cancelada")).toBeInTheDocument();
@@ -107,7 +108,42 @@ describe("frontend rediseñado", () => {
       profile_id: "pepe",
       source_url: "https://www.youtube.com/watch?v=abc",
       destination_path: "Rock",
+      requested_filename: null,
     });
+  });
+
+  test("envía nombre personalizado válido al crear una descarga", async () => {
+    const fetchMock = mockApi();
+    const user = userEvent.setup();
+    renderApp(["/downloads"]);
+
+    expect(await screen.findByText(/Opcional\. No indiques la extensión/)).toBeInTheDocument();
+    await user.type(await screen.findByLabelText(/URL/), "https://www.youtube.com/watch?v=abc");
+    await user.type(screen.getByLabelText(/Nombre del archivo/), "Sandunga verano");
+    await user.click(screen.getByRole("button", { name: "Añadir a la cola" }));
+
+    const postCall = findFetchCall(fetchMock, "/api/v1/downloads", "POST");
+    expect(JSON.parse(String(postCall?.[1]?.body))).toMatchObject({
+      requested_filename: "Sandunga verano",
+    });
+  });
+
+  test.each([
+    ["Rock/tema", "El nombre del archivo no puede contener rutas ni caracteres de control."],
+    ["tema.m4a", "No incluyas la extensión del archivo; el sistema la determina automáticamente."],
+    [".", "El nombre del archivo no puede ser oculto ni reservado."],
+    ["a".repeat(181), "El nombre del archivo no puede superar 180 caracteres."],
+  ])("muestra validación local de nombre personalizado: %s", async (filename, message) => {
+    const fetchMock = mockApi();
+    const user = userEvent.setup();
+    renderApp(["/downloads"]);
+
+    await user.type(await screen.findByLabelText(/URL/), "https://www.youtube.com/watch?v=abc");
+    await user.type(screen.getByLabelText(/Nombre del archivo/), filename);
+    await user.click(screen.getByRole("button", { name: "Añadir a la cola" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+    expect(findFetchCall(fetchMock, "/api/v1/downloads", "POST")).toBeUndefined();
   });
 
   test("muestra errores de descargas traducidos al español", async () => {
@@ -322,6 +358,7 @@ function makeJob(id: string, status: string, progress: number | null, outputPath
     profile_id: "pepe",
     source_url: `https://www.youtube.com/watch?v=VIDEO_${id}`,
     destination_path: id === "2" ? "Rock/Clasicos" : "Rock",
+    requested_filename: id === "2" ? "Sandunga verano" : null,
     audio_policy: "prefer_m4a_then_best_source",
     status,
     progress_percent: progress,

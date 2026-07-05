@@ -56,6 +56,7 @@ class CreatedDownloadJob:
     profile: LibraryProfile
     source_url: str
     destination_path: str
+    requested_filename: str | None
     audio_policy: str
     status: str
     progress_percent: int | None
@@ -71,6 +72,7 @@ def create_queued_download_job(
     profile: LibraryProfile,
     source_url: str,
     destination_path: str,
+    requested_filename: str | None = None,
 ) -> CreatedDownloadJob:
     now = datetime.now(UTC)
     job = DownloadJob(
@@ -78,6 +80,7 @@ def create_queued_download_job(
         profile_id=profile.id,
         source_url=source_url,
         destination_relative_path=destination_path,
+        requested_filename=requested_filename,
         audio_policy=AudioPolicy.PREFER_M4A_THEN_BEST_SOURCE.value,
         status=DownloadJobStatus.QUEUED.value,
         progress_percent=None,
@@ -109,6 +112,7 @@ def create_queued_download_job(
         profile=profile,
         source_url=persisted_job.source_url,
         destination_path=persisted_job.destination_relative_path,
+        requested_filename=persisted_job.requested_filename,
         audio_policy=persisted_job.audio_policy,
         status=persisted_job.status,
         progress_percent=persisted_job.progress_percent,

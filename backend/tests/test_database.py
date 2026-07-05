@@ -71,6 +71,7 @@ def test_download_jobs_columns_and_indexes() -> None:
         "profile_id",
         "source_url",
         "destination_relative_path",
+        "requested_filename",
         "audio_policy",
         "status",
         "progress_percent",

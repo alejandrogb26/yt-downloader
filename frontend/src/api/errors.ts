@@ -12,6 +12,11 @@ const FALLBACK_ERROR_MESSAGE = "Se ha producido un error al comunicarse con el s
 
 const ERROR_TRANSLATIONS = new Map<string, string>([
   ["Invalid source URL.", "La URL de origen no es válida."],
+  ["Invalid requested filename.", "El nombre del archivo no es válido."],
+  [
+    "No incluyas la extensión del archivo; el sistema la determina automáticamente.",
+    "No incluyas la extensión del archivo; el sistema la determina automáticamente.",
+  ],
   ["Download service is unavailable.", "El servicio de descargas no está disponible."],
   ["Profile not found.", "No se ha encontrado el perfil."],
   ["Profiles configuration is unavailable.", "La configuración de perfiles no está disponible."],

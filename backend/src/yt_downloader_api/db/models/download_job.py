@@ -47,6 +47,7 @@ class DownloadJob(Base):
         default="",
         server_default="",
     )
+    requested_filename: Mapped[str | None] = mapped_column(String(180))
     audio_policy: Mapped[str] = mapped_column(
         String(64),
         nullable=False,

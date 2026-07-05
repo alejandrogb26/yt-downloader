@@ -57,6 +57,7 @@ export type DownloadJobListItem = {
   profile_id: string;
   source_url: string;
   destination_path: string;
+  requested_filename: string | null;
   audio_policy: string;
   status: DownloadStatus;
   progress_percent: number | null;
@@ -88,6 +89,7 @@ export type CreateDownloadRequest = {
   profile_id: string;
   source_url: string;
   destination_path: string;
+  requested_filename?: string | null;
 };
 
 export type CreatedDownloadJob = {
@@ -95,6 +97,7 @@ export type CreatedDownloadJob = {
   profile: Profile;
   source_url: string;
   destination_path: string;
+  requested_filename: string | null;
   audio_policy: string;
   status: DownloadStatus;
   progress_percent: number | null;

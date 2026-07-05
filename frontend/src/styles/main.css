@@ -200,6 +200,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .field, .inline-field { display: grid; gap: 7px; }
 .field span, .inline-field span { color: var(--color-text); font-size: 0.88rem; font-weight: 760; }
 .field small { color: var(--color-text-muted); }
+.field-error { color: var(--color-error); font-size: 0.9rem; margin: -8px 0 0; }
 .inline-field { min-width: 180px; }
 
 .card {
@@ -270,6 +271,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .job-main { display: grid; gap: 3px; min-width: 0; }
 .job-main strong, .downloads-row [role="cell"] { overflow-wrap: anywhere; }
 .job-main span { color: var(--color-text-muted); }
+.job-main em { color: var(--color-text-muted); font-style: normal; }
 .job-status-cell { display: grid; gap: 8px; }
 .status-pill {
   align-items: center;
