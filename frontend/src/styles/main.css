@@ -248,17 +248,21 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .destination-card span, .destination-card small { color: var(--color-text-muted); }
 .destination-card strong { font-size: 1.2rem; overflow-wrap: anywhere; }
 
-.downloads-table { display: grid; gap: 6px; margin-top: 14px; }
+.downloads-table { display: grid; gap: 6px; margin-top: 14px; min-width: 0; width: 100%; }
 .downloads-row {
   align-items: center;
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
+  box-sizing: border-box;
   display: grid;
   gap: 12px;
-  grid-template-columns: 150px minmax(180px, 1.4fr) minmax(120px, 0.9fr) 145px 150px minmax(160px, 1fr);
+  grid-template-columns: minmax(118px, 0.7fr) minmax(0, 1.45fr) minmax(0, 0.9fr) minmax(0, 0.75fr) minmax(0, 0.85fr) minmax(0, 1.15fr);
+  min-width: 0;
   padding: 12px;
+  width: 100%;
 }
+.downloads-row > * { min-width: 0; }
 .downloads-row--head {
   background: transparent;
   border: 0;
@@ -269,10 +273,14 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   text-transform: uppercase;
 }
 .job-main { display: grid; gap: 3px; min-width: 0; }
-.job-main strong, .downloads-row [role="cell"] { overflow-wrap: anywhere; }
+.job-main strong, .job-main em, .job-main span, .downloads-row [role="cell"], .downloads-row [role="columnheader"] {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
 .job-main span { color: var(--color-text-muted); }
 .job-main em { color: var(--color-text-muted); font-style: normal; }
-.job-status-cell { display: grid; gap: 8px; }
+.job-status-cell { display: grid; gap: 8px; min-width: 0; }
 .status-pill {
   align-items: center;
   border-radius: 999px;
@@ -400,7 +408,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 @media (max-width: 1180px) {
   .downloads-grid { grid-template-columns: 1fr; }
-  .downloads-row { grid-template-columns: 145px minmax(180px, 1fr) minmax(120px, 0.8fr) 130px; }
+  .downloads-row { grid-template-columns: minmax(118px, 0.7fr) minmax(0, 1.25fr) minmax(0, 0.9fr) minmax(0, 0.75fr); }
   .downloads-row > :nth-child(5), .downloads-row > :nth-child(6) { grid-column: span 2; }
   .downloads-row--head > :nth-child(5), .downloads-row--head > :nth-child(6) { display: none; }
 }

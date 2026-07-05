@@ -235,11 +235,13 @@ function DownloadsList({ jobs, profiles }: { jobs: DownloadJobListItem[]; profil
             <ProgressBar progress={job.progress_percent} />
           </div>
           <div className="job-main" role="cell">
-            <strong>{job.title ?? truncateSource(job.source_url)}</strong>
-            {job.requested_filename ? <em>Nombre solicitado: {job.requested_filename}</em> : null}
+            <strong title={job.title ?? job.source_url}>{job.title ?? truncateSource(job.source_url)}</strong>
+            {job.requested_filename ? (
+              <em title={job.requested_filename}>Nombre solicitado: {job.requested_filename}</em>
+            ) : null}
             <span>{profileNames.get(job.profile_id) ?? job.profile_id}</span>
           </div>
-          <div role="cell" data-label="Destino">
+          <div role="cell" data-label="Destino" title={displayPath(job.destination_path)}>
             {displayPath(job.destination_path)}
           </div>
           <div role="cell" data-label="Formato">
@@ -248,7 +250,7 @@ function DownloadsList({ jobs, profiles }: { jobs: DownloadJobListItem[]; profil
           <div role="cell" data-label="Tiempo">
             {formatJobTime(job)}
           </div>
-          <div role="cell" data-label="Resultado">
+          <div role="cell" data-label="Resultado" title={job.output_path ? displayPath(job.output_path) : undefined}>
             {job.output_path ? displayPath(job.output_path) : <span className="muted">Pendiente</span>}
           </div>
         </article>

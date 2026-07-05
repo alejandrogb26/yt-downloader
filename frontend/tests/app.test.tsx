@@ -40,8 +40,9 @@ const downloadsResponse = {
     makeJob("3", "queued", 0, null),
     makeJob("4", "failed", 12, null),
     makeJob("5", "cancelled", null, null),
+    makeLongJob(),
   ],
-  total: 5,
+  total: 6,
   limit: 25,
   offset: 0,
 };
@@ -81,14 +82,23 @@ describe("frontend rediseñado", () => {
 
     expect(await screen.findByText("Descargando")).toBeInTheDocument();
     expect(screen.getAllByText("Indeterminado").length).toBeGreaterThan(0);
-    expect(screen.getByText("Completada")).toBeInTheDocument();
+    expect(screen.getAllByText("Completada").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Nombre solicitado: Sandunga verano")).toBeInTheDocument();
     expect(screen.getByText("En cola")).toBeInTheDocument();
     expect(screen.getByText("Fallida")).toBeInTheDocument();
     expect(screen.getByText("Cancelada")).toBeInTheDocument();
-    expect(screen.getByText("100 %")).toBeInTheDocument();
+    expect(screen.getAllByText("100 %").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("/Rock/Clasicos/Canción final [abc].m4a")).toBeInTheDocument();
     expect(screen.queryByText(/root_path|worker_id|\/mnt\/music/)).not.toBeInTheDocument();
+  });
+
+  test("renderiza trabajos con título, nombre solicitado y resultado largos", async () => {
+    mockApi();
+    renderApp(["/downloads"]);
+
+    expect(await screen.findByText(/Título extremadamente largo/)).toBeInTheDocument();
+    expect(screen.getByText(/Nombre solicitado: Sandunga verano edición extendida/)).toBeInTheDocument();
+    expect(screen.getByText(/archivo-final-con-un-nombre-muy-largo/)).toBeInTheDocument();
   });
 
   test("envía nueva descarga con profile_id, source_url y destination_path correctos", async () => {
@@ -367,6 +377,28 @@ function makeJob(id: string, status: string, progress: number | null, outputPath
     created_at: "2026-07-01T12:00:00Z",
     started_at: status === "running" ? "2026-07-01T12:01:00Z" : null,
     finished_at: status === "completed" ? "2026-07-01T12:05:00Z" : null,
+  };
+}
+
+function makeLongJob() {
+  return {
+    id: "6",
+    profile_id: "pepe",
+    source_url: "https://www.youtube.com/watch?v=VIDEO_6",
+    destination_path:
+      "Rock/Clasicos/Directos/Temporada 2026/Carpeta con un nombre descriptivo y largo",
+    requested_filename:
+      "Sandunga verano edición extendida para comprobar que no rompe el contenedor",
+    audio_policy: "prefer_m4a_then_best_source",
+    status: "completed",
+    progress_percent: 100,
+    title:
+      "Título extremadamente largo de una canción descargada desde YouTube para validar wrapping visual",
+    output_path:
+      "Rock/Clasicos/Directos/Temporada 2026/archivo-final-con-un-nombre-muy-largo-y-suficiente-para-forzar-saltos-controlados.m4a",
+    created_at: "2026-07-01T12:00:00Z",
+    started_at: "2026-07-01T12:01:00Z",
+    finished_at: "2026-07-01T12:05:00Z",
   };
 }
 
