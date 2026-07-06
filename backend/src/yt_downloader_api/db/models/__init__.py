@@ -1,3 +1,4 @@
+from yt_downloader_api.db.models.download_batch import DownloadBatch
 from yt_downloader_api.db.models.download_job import (
     AudioPolicy,
     DownloadJob,
@@ -5,4 +6,10 @@ from yt_downloader_api.db.models.download_job import (
 )
 from yt_downloader_api.db.models.download_job_event import DownloadJobEvent
 
-__all__ = ["AudioPolicy", "DownloadJob", "DownloadJobEvent", "DownloadJobStatus"]
+__all__ = [
+    "AudioPolicy",
+    "DownloadBatch",
+    "DownloadJob",
+    "DownloadJobEvent",
+    "DownloadJobStatus",
+]

@@ -35,6 +35,7 @@ class FakeDownloadJobRepository:
         offset: int,
         profile_id: str | None = None,
         status: str | None = None,
+        batch_id: str | None = None,
     ) -> tuple[list[DownloadJob], int]:
         if self.raise_on_read:
             raise DownloadJobRepositoryError
@@ -43,6 +44,8 @@ class FakeDownloadJobRepository:
             jobs = [job for job in jobs if job.profile_id == profile_id]
         if status is not None:
             jobs = [job for job in jobs if job.status == status]
+        if batch_id is not None:
+            jobs = [job for job in jobs if job.batch_id == batch_id]
         jobs = sorted(jobs, key=lambda job: (job.created_at, job.id), reverse=True)
         return jobs[offset : offset + limit], len(jobs)
 
@@ -266,6 +269,7 @@ async def test_get_download_detail(
     assert response.status_code == 200
     assert response.json() == {
         "id": job_id,
+        "batch_id": None,
         "profile_id": "pepe",
         "source_url": "https://www.youtube.com/watch?v=VIDEO_ID",
         "destination_path": "Rock",

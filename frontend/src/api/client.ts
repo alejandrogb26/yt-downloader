@@ -1,9 +1,13 @@
 import { ApiError } from "./errors";
 import type {
   CreateDownloadRequest,
+  BatchPreviewResponse,
+  BatchRequest,
   CreateDirectoryRequest,
   CreatedDirectory,
+  CreatedDownloadBatchResponse,
   CreatedDownloadJob,
+  DownloadBatchListResponse,
   DownloadJobDetail,
   DownloadJobListResponse,
   LibraryEntriesResponse,
@@ -113,10 +117,48 @@ export async function createDownloadJob(
   });
 }
 
-export async function getDownloads(profileId?: string): Promise<DownloadJobListResponse> {
+export async function previewDownloadBatch(
+  profileId: string,
+  body: BatchRequest,
+): Promise<BatchPreviewResponse> {
+  return requestJson<BatchPreviewResponse>(
+    `/profiles/${encodeURIComponent(profileId)}/download-batches/preview`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export async function createDownloadBatch(
+  profileId: string,
+  body: BatchRequest,
+): Promise<CreatedDownloadBatchResponse> {
+  return requestJson<CreatedDownloadBatchResponse>(
+    `/profiles/${encodeURIComponent(profileId)}/download-batches`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export async function getDownloadBatches(profileId: string): Promise<DownloadBatchListResponse> {
+  const params = new URLSearchParams({ limit: "10", offset: "0" });
+  return requestJson<DownloadBatchListResponse>(
+    `/profiles/${encodeURIComponent(profileId)}/download-batches?${params.toString()}`,
+  );
+}
+
+export async function getDownloads(profileId?: string, batchId?: string): Promise<DownloadJobListResponse> {
   const params = new URLSearchParams({ limit: "25", offset: "0" });
   if (profileId) {
     params.set("profile_id", profileId);
+  }
+  if (batchId) {
+    params.set("batch_id", batchId);
   }
   return requestJson<DownloadJobListResponse>(`/downloads?${params.toString()}`);
 }

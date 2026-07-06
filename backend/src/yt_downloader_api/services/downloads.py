@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 
 from yt_downloader_api.db.models import (
     AudioPolicy,
+    DownloadBatch,
     DownloadJob,
     DownloadJobEvent,
     DownloadJobStatus,
@@ -32,12 +33,20 @@ class DownloadJobWriter(Protocol):
         created_at: datetime,
     ) -> DownloadJob: ...
 
+    def create_batch_with_jobs_and_events(
+        self,
+        batch: DownloadBatch,
+        jobs: list[DownloadJob],
+        created_at: datetime,
+    ) -> DownloadBatch: ...
+
     def list_jobs(
         self,
         limit: int,
         offset: int,
         profile_id: str | None = None,
         status: str | None = None,
+        batch_id: str | None = None,
     ) -> tuple[list[DownloadJob], int]: ...
 
     def get_job(self, job_id: str) -> DownloadJob | None: ...
@@ -48,6 +57,15 @@ class DownloadJobWriter(Protocol):
         limit: int,
         offset: int,
     ) -> tuple[list[DownloadJobEvent], int]: ...
+
+    def list_batches(
+        self,
+        profile_id: str,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[DownloadBatch], int]: ...
+
+    def get_batch(self, batch_id: str) -> DownloadBatch | None: ...
 
 
 @dataclass(frozen=True)
@@ -65,6 +83,19 @@ class CreatedDownloadJob:
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+
+
+@dataclass(frozen=True)
+class DownloadBatchItemInput:
+    source_url: str
+    destination_path: str
+    requested_filename: str | None
+
+
+@dataclass(frozen=True)
+class CreatedDownloadBatch:
+    batch: DownloadBatch
+    jobs: list[DownloadJob]
 
 
 def create_queued_download_job(
@@ -124,15 +155,85 @@ def create_queued_download_job(
     )
 
 
+def create_queued_download_batch(
+    repository: DownloadJobWriter,
+    profile: LibraryProfile,
+    default_destination_path: str,
+    items: list[DownloadBatchItemInput],
+) -> CreatedDownloadBatch:
+    now = datetime.now(UTC)
+    batch = DownloadBatch(
+        id=str(uuid4()),
+        profile_id=profile.id,
+        default_destination_path=default_destination_path,
+        total_items=len(items),
+        created_at=now,
+    )
+    jobs = [
+        build_queued_download_job(
+            profile_id=profile.id,
+            source_url=item.source_url,
+            destination_path=item.destination_path,
+            requested_filename=item.requested_filename,
+            created_at=now,
+            batch_id=batch.id,
+        )
+        for item in items
+    ]
+    try:
+        persisted_batch = repository.create_batch_with_jobs_and_events(batch, jobs, now)
+    except DownloadJobRepositoryError as exc:
+        raise DownloadPersistenceError from exc
+    return CreatedDownloadBatch(batch=persisted_batch, jobs=jobs)
+
+
+def build_queued_download_job(
+    profile_id: str,
+    source_url: str,
+    destination_path: str,
+    requested_filename: str | None,
+    created_at: datetime,
+    batch_id: str | None = None,
+) -> DownloadJob:
+    return DownloadJob(
+        id=str(uuid4()),
+        profile_id=profile_id,
+        batch_id=batch_id,
+        source_url=source_url,
+        destination_relative_path=destination_path,
+        requested_filename=requested_filename,
+        audio_policy=AudioPolicy.PREFER_M4A_THEN_BEST_SOURCE.value,
+        status=DownloadJobStatus.QUEUED.value,
+        progress_percent=None,
+        title=None,
+        output_relative_path=None,
+        source_format_id=None,
+        source_container=None,
+        source_audio_codec=None,
+        output_container=None,
+        output_audio_codec=None,
+        transcode_applied=False,
+        error_code=None,
+        error_message=None,
+        worker_id=None,
+        attempt_count=0,
+        created_at=created_at,
+        updated_at=created_at,
+        started_at=None,
+        finished_at=None,
+    )
+
+
 def list_download_jobs(
     repository: DownloadJobWriter,
     limit: int,
     offset: int,
     profile_id: str | None = None,
     status: str | None = None,
+    batch_id: str | None = None,
 ) -> tuple[list[DownloadJob], int]:
     try:
-        return repository.list_jobs(limit, offset, profile_id, status)
+        return repository.list_jobs(limit, offset, profile_id, status, batch_id)
     except DownloadJobRepositoryError as exc:
         raise DownloadPersistenceError from exc
 
@@ -172,3 +273,26 @@ def validate_job_id(job_id: str) -> str:
     if str(parsed_job_id) != job_id.lower():
         raise InvalidDownloadJobIdError
     return job_id
+
+
+def list_download_batches(
+    repository: DownloadJobWriter,
+    profile_id: str,
+    limit: int,
+    offset: int,
+) -> tuple[list[DownloadBatch], int]:
+    try:
+        return repository.list_batches(profile_id, limit, offset)
+    except DownloadJobRepositoryError as exc:
+        raise DownloadPersistenceError from exc
+
+
+def get_download_batch(repository: DownloadJobWriter, batch_id: str) -> DownloadBatch:
+    safe_batch_id = validate_job_id(batch_id)
+    try:
+        batch = repository.get_batch(safe_batch_id)
+    except DownloadJobRepositoryError as exc:
+        raise DownloadPersistenceError from exc
+    if batch is None:
+        raise DownloadJobNotFoundError
+    return batch

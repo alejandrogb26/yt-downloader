@@ -2,9 +2,12 @@ import argparse
 import logging
 import sys
 from collections.abc import Callable
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import UTC, datetime, timedelta
 from signal import SIG_DFL, SIGINT, SIGTERM, signal
 from socket import gethostname
+from threading import Event
+from time import monotonic
 from typing import Protocol
 from uuid import uuid4
 
@@ -33,6 +36,7 @@ INTERRUPTED_MESSAGE = "Download worker stopped before completion."
 LOGGER_NAME = "yt_downloader_api.worker"
 
 logger = logging.getLogger(LOGGER_NAME)
+stop_event = Event()
 
 
 class WorkerInterrupted(Exception):
@@ -154,6 +158,119 @@ def run_once(
     return 1
 
 
+def run_persistent_worker(settings: Settings) -> int:
+    worker_id = derive_worker_id(settings)
+    session_factory = get_session_factory()
+    active: set[Future[bool]] = set()
+    last_empty_log = 0.0
+    logger.info(
+        "Worker started. worker_id=%s concurrency=%s poll_interval_seconds=%s",
+        worker_id,
+        settings.worker_concurrency,
+        settings.worker_queue_poll_interval_seconds,
+    )
+    with ThreadPoolExecutor(max_workers=settings.worker_concurrency) as executor:
+        while not stop_event.is_set() or active:
+            if not stop_event.is_set():
+                recover_stale_jobs(settings, session_factory)
+                while (
+                    len(active) < settings.worker_concurrency
+                    and not stop_event.is_set()
+                ):
+                    job = claim_job_for_worker(session_factory, worker_id)
+                    if job is None:
+                        if monotonic() - last_empty_log > 60:
+                            logger.info("No queued jobs available.")
+                            last_empty_log = monotonic()
+                        break
+                    future = executor.submit(
+                        execute_claimed_job,
+                        settings,
+                        job.id,
+                        worker_id,
+                    )
+                    active.add(future)
+            if active:
+                done, active = wait(
+                    active,
+                    timeout=settings.worker_queue_poll_interval_seconds,
+                    return_when=FIRST_COMPLETED,
+                )
+                for future in done:
+                    try:
+                        future.result()
+                    except Exception:
+                        logger.exception("Concurrent worker slot failed unexpectedly.")
+            elif not stop_event.wait(settings.worker_queue_poll_interval_seconds):
+                continue
+    logger.info("Worker stopped. worker_id=%s", worker_id)
+    return 0
+
+
+def recover_stale_jobs(settings: Settings, session_factory) -> None:
+    stale_before = datetime.now(UTC) - timedelta(
+        seconds=settings.worker_stale_job_timeout_seconds
+    )
+    with session_factory() as session:
+        repository = DownloadQueueRepository(session)
+        recovered_count = mark_stale_running_jobs_as_failed(repository, stale_before)
+        if recovered_count:
+            logger.warning("Recovered stale running jobs. count=%s", recovered_count)
+
+
+def claim_job_for_worker(session_factory, worker_id: str) -> DownloadJob | None:
+    with session_factory() as session:
+        repository = DownloadQueueRepository(session)
+        job = claim_next_queued_job(repository, worker_id)
+        if job is None:
+            return None
+        logger.info("Claimed job. job_id=%s", job.id)
+        return job
+
+
+def execute_claimed_job(settings: Settings, job_id: str, worker_id: str) -> bool:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        repository = DownloadQueueRepository(session)
+        job = session.get(DownloadJob, job_id)
+        if job is None:
+            logger.warning("Claimed job disappeared. job_id=%s", job_id)
+            return False
+        try:
+            add_running_job_event(
+                repository,
+                job.id,
+                worker_id,
+                "info",
+                "Download started.",
+            )
+            completed = execute_download_job(
+                settings,
+                repository,
+                YtDlpAudioDownloader(),
+                job,
+                worker_id,
+            )
+            if completed:
+                logger.info("Job completed. job_id=%s", job.id)
+            else:
+                logger.warning("Job failed. job_id=%s", job.id)
+            return completed
+        except Exception:
+            logger.exception("Job failed unexpectedly. job_id=%s", job.id)
+            try:
+                mark_running_job_as_failed(
+                    repository,
+                    job.id,
+                    worker_id,
+                    "worker_unexpected_error",
+                    "Download worker failed unexpectedly.",
+                )
+            except DownloadQueuePersistenceError:
+                log_queue_exception("mark unexpected job failure")
+            return False
+
+
 def diagnose_queue(settings: Settings, session: Session) -> int:
     return diagnose_queue_source(settings, SqlAlchemyQueueDiagnosticSource(session))
 
@@ -196,6 +313,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Run safe read-only queue diagnostics without downloading.",
     )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Process at most one queued job and exit.",
+    )
     args = parser.parse_args(argv)
 
     settings = get_settings()
@@ -212,8 +334,11 @@ def main(argv: list[str] | None = None) -> int:
         with session_factory() as session:
             if args.diagnose_queue:
                 return diagnose_queue(settings, session)
-            repository = DownloadQueueRepository(session)
-            return run_once(settings, repository)
+            if args.once:
+                repository = DownloadQueueRepository(session)
+                return run_once(settings, repository)
+
+        return run_persistent_worker(settings)
     except DatabaseConfigurationError:
         logger.exception(
             "Worker database configuration failed. exception_type=%s",
@@ -227,11 +352,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def install_signal_handlers() -> None:
-    def raise_interrupted(_signum: int, _frame: object) -> None:
-        raise WorkerInterrupted
+    def request_stop(_signum: int, _frame: object) -> None:
+        stop_event.set()
 
-    signal(SIGINT, raise_interrupted)
-    signal(SIGTERM, raise_interrupted)
+    signal(SIGINT, request_stop)
+    signal(SIGTERM, request_stop)
 
 
 def restore_default_signal_handlers() -> None:

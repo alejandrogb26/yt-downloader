@@ -135,7 +135,7 @@ Ejecutar una pasada del worker one-shot:
 uv run --project backend python -m yt_downloader_api.worker.main
 ```
 
-El worker requiere `DATABASE_URL`, `PROFILES_CONFIG_PATH` y acceso de escritura a `DOWNLOAD_STAGING_ROOT` y a la biblioteca destino. No aplica migraciones automáticamente. Para fijar un identificador estable se puede configurar `WORKER_ID`; si falta, se genera uno a partir del hostname.
+El worker requiere `DATABASE_URL`, `PROFILES_CONFIG_PATH` y acceso de escritura a `DOWNLOAD_STAGING_ROOT` y a la biblioteca destino. No aplica migraciones automáticamente. Para fijar un identificador estable se puede configurar `WORKER_ID`; si falta, se genera uno a partir del hostname. En producción es un servicio persistente con concurrencia global configurable mediante `WORKER_CONCURRENCY` y sondeo con `WORKER_QUEUE_POLL_INTERVAL_SECONDS`.
 
 Levantar la API usando el ejemplo de perfiles local, sin modificar `/etc`:
 

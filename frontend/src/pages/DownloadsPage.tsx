@@ -2,9 +2,22 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { createDownloadJob, getDownloads, getProfiles } from "../api/client";
+import {
+  createDownloadBatch,
+  createDownloadJob,
+  getDownloadBatches,
+  getDownloads,
+  getProfiles,
+  previewDownloadBatch,
+} from "../api/client";
 import { getUserErrorMessage } from "../api/errors";
-import type { DownloadJobListItem, Profile } from "../api/types";
+import type {
+  BatchPreviewResponse,
+  BatchRequest,
+  DownloadBatchSummary,
+  DownloadJobListItem,
+  Profile,
+} from "../api/types";
 import { useSelection } from "../app/SelectionContext";
 import { ProfileSelect } from "../components/ProfileSelect";
 import { StatusMessage } from "../components/StatusMessage";
@@ -27,7 +40,9 @@ export function DownloadsPage() {
   const [requestedFilename, setRequestedFilename] = useState("");
   const [filenameError, setFilenameError] = useState("");
   const [jobScope, setJobScope] = useState<JobScope>("profile");
+  const [filteredBatchId, setFilteredBatchId] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState("");
+  const [isBatchDialogOpen, setIsBatchDialogOpen] = useState(false);
 
   const profilesQuery = useQuery({ queryKey: ["profiles"], queryFn: getProfiles });
   const profiles = useMemo(() => profilesQuery.data?.profiles ?? [], [profilesQuery.data]);
@@ -41,12 +56,21 @@ export function DownloadsPage() {
   const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId);
   const downloadsProfileId = jobScope === "profile" ? selectedProfileId : undefined;
   const downloadsQuery = useQuery({
-    queryKey: ["downloads", downloadsProfileId ?? "all"],
-    queryFn: () => getDownloads(downloadsProfileId),
+    queryKey: ["downloads", downloadsProfileId ?? "all", filteredBatchId ?? "all-batches"],
+    queryFn: () => getDownloads(downloadsProfileId, filteredBatchId ?? undefined),
     enabled: jobScope === "all" || Boolean(selectedProfileId),
     refetchInterval: (query) => {
       const items = query.state.data?.items ?? [];
       return shouldPoll(items.map((item) => item.status)) ? 5_000 : false;
+    },
+  });
+  const batchesQuery = useQuery({
+    queryKey: ["download-batches", selectedProfileId],
+    queryFn: () => getDownloadBatches(selectedProfileId),
+    enabled: Boolean(selectedProfileId),
+    refetchInterval: (query) => {
+      const items = query.state.data?.items ?? [];
+      return items.some((item) => item.queued_count > 0 || item.running_count > 0) ? 5_000 : false;
     },
   });
 
@@ -61,9 +85,22 @@ export function DownloadsPage() {
     },
   });
 
+  const createBatchMutation = useMutation({
+    mutationFn: ({ profileId, body }: { profileId: string; body: BatchRequest }) =>
+      createDownloadBatch(profileId, body),
+    onSuccess: (created) => {
+      setSuccessMessage(`Lote creado con ${created.batch.total_items} trabajos.`);
+      setIsBatchDialogOpen(false);
+      setFilteredBatchId(created.batch.id);
+      void queryClient.invalidateQueries({ queryKey: ["downloads"] });
+      void queryClient.invalidateQueries({ queryKey: ["download-batches"] });
+    },
+  });
+
   const canCreate = Boolean(selectedProfileId && sourceUrl.trim()) && profiles.length > 0;
   const selectLibraryLink = `/library?profile=${encodeURIComponent(selectedProfileId)}&select=1`;
   const jobs = downloadsQuery.data?.items ?? [];
+  const batches = batchesQuery.data?.items ?? [];
 
   return (
     <div className="downloads-page">
@@ -173,6 +210,14 @@ export function DownloadsPage() {
             >
               {createMutation.isPending ? "Añadiendo..." : "Añadir a la cola"}
             </button>
+            <button
+              className="button button--secondary button--wide"
+              type="button"
+              disabled={!selectedProfileId}
+              onClick={() => setIsBatchDialogOpen(true)}
+            >
+              Descarga por lote
+            </button>
           </form>
 
           {successMessage ? <StatusMessage tone="success">{successMessage}</StatusMessage> : null}
@@ -182,10 +227,24 @@ export function DownloadsPage() {
         </Card>
 
         <Card className="jobs-card" aria-labelledby="downloads-heading">
+          <BatchList
+            batches={batches}
+            isLoading={batchesQuery.isLoading}
+            error={batchesQuery.error}
+            activeBatchId={filteredBatchId}
+            onOpenBatch={(batchId) => {
+              setFilteredBatchId(batchId);
+              setJobScope("profile");
+            }}
+            onClearBatch={() => setFilteredBatchId(null)}
+          />
           <div className="list-toolbar">
             <div>
               <h2 id="downloads-heading">Trabajos recientes</h2>
-              <p>{downloadsQuery.data?.total ?? jobs.length} trabajos visibles</p>
+              <p>
+                {downloadsQuery.data?.total ?? jobs.length} trabajos visibles
+                {filteredBatchId ? " · filtrados por lote" : ""}
+              </p>
             </div>
             <label className="inline-field">
               <span>Mostrar</span>
@@ -208,7 +267,187 @@ export function DownloadsPage() {
           {jobs.length > 0 ? <DownloadsList jobs={jobs} profiles={profiles} /> : null}
         </Card>
       </div>
+      {isBatchDialogOpen ? (
+        <BatchDialog
+          profileId={selectedProfileId}
+          defaultDestinationPath={destinationPath}
+          isCreating={createBatchMutation.isPending}
+          createError={createBatchMutation.error}
+          onClose={() => setIsBatchDialogOpen(false)}
+          onCreate={(body) => createBatchMutation.mutate({ profileId: selectedProfileId, body })}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function BatchList({
+  batches,
+  isLoading,
+  error,
+  activeBatchId,
+  onOpenBatch,
+  onClearBatch,
+}: {
+  batches: DownloadBatchSummary[];
+  isLoading: boolean;
+  error: unknown;
+  activeBatchId: string | null;
+  onOpenBatch: (batchId: string) => void;
+  onClearBatch: () => void;
+}) {
+  return (
+    <section className="batch-section" aria-labelledby="batches-heading">
+      <div className="batch-section-heading">
+        <div>
+          <h3 id="batches-heading">Lotes recientes</h3>
+          <p>Colas agrupadas del perfil seleccionado.</p>
+        </div>
+        {activeBatchId ? (
+          <button className="button button--secondary" type="button" onClick={onClearBatch}>
+            Ver todos los trabajos
+          </button>
+        ) : null}
+      </div>
+      {isLoading ? <Skeleton label="Cargando lotes" /> : null}
+      {error ? <StatusMessage tone="error">{getUserErrorMessage(error)}</StatusMessage> : null}
+      {!isLoading && batches.length === 0 ? (
+        <EmptyState title="Sin lotes recientes">Los lotes creados aparecerán aquí.</EmptyState>
+      ) : null}
+      {batches.length > 0 ? (
+        <div className="batch-list" role="list">
+          {batches.map((batch) => (
+            <button
+              type="button"
+              role="listitem"
+              key={batch.id}
+              className={activeBatchId === batch.id ? "batch-card batch-card--active" : "batch-card"}
+              onClick={() => onOpenBatch(batch.id)}
+            >
+              <span className="status-pill">{getBatchStatusLabel(batch.status)}</span>
+              <strong>{formatBatchProgress(batch)}</strong>
+              <span>Destino: {displayPath(batch.default_destination_path)}</span>
+              <small>{new Date(batch.created_at).toLocaleString()}</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function BatchDialog({
+  profileId,
+  defaultDestinationPath,
+  isCreating,
+  createError,
+  onClose,
+  onCreate,
+}: {
+  profileId: string;
+  defaultDestinationPath: string;
+  isCreating: boolean;
+  createError: unknown;
+  onClose: () => void;
+  onCreate: (body: BatchRequest) => void;
+}) {
+  const [jsonText, setJsonText] = useState(() => makeBatchExample(defaultDestinationPath));
+  const [jsonError, setJsonError] = useState("");
+  const [preview, setPreview] = useState<BatchPreviewResponse | null>(null);
+  const [previewBody, setPreviewBody] = useState<BatchRequest | null>(null);
+  const previewMutation = useMutation({
+    mutationFn: ({ body }: { body: BatchRequest }) => previewDownloadBatch(profileId, body),
+    onSuccess: (data, variables) => {
+      setPreview(data);
+      setPreviewBody(variables.body);
+    },
+  });
+
+  useEffect(() => {
+    setPreview(null);
+    setPreviewBody(null);
+  }, [jsonText, profileId]);
+
+  const parseBody = (): BatchRequest | null => {
+    try {
+      const parsed = JSON.parse(jsonText) as BatchRequest;
+      setJsonError("");
+      return parsed;
+    } catch (error) {
+      setJsonError(`JSON inválido: ${error instanceof Error ? error.message : "revisa la sintaxis"}.`);
+      return null;
+    }
+  };
+
+  const canCreate = Boolean(preview?.valid && previewBody && !isCreating);
+  return (
+    <div className="dialog-backdrop">
+      <div className="dialog-panel batch-dialog" role="dialog" aria-modal="true" aria-labelledby="batch-dialog-heading">
+        <h3 id="batch-dialog-heading">Descarga por lote</h3>
+        <p>
+          Pega JSON válido. Cada elemento puede sobrescribir la ruta por defecto con
+          <code> destination_path</code>.
+        </p>
+        <textarea
+          className="batch-json-input"
+          value={jsonText}
+          onChange={(event) => setJsonText(event.target.value)}
+          aria-label="JSON de descarga por lote"
+        />
+        {jsonError ? <StatusMessage tone="error">{jsonError}</StatusMessage> : null}
+        {previewMutation.error ? (
+          <StatusMessage tone="error">{getUserErrorMessage(previewMutation.error)}</StatusMessage>
+        ) : null}
+        {createError ? <StatusMessage tone="error">{getUserErrorMessage(createError)}</StatusMessage> : null}
+        <div className="dialog-actions">
+          <button className="button button--secondary" type="button" disabled={isCreating} onClick={onClose}>
+            Cancelar
+          </button>
+          <button
+            className="button button--secondary"
+            type="button"
+            disabled={previewMutation.isPending}
+            onClick={() => {
+              const body = parseBody();
+              if (body) previewMutation.mutate({ body });
+            }}
+          >
+            {previewMutation.isPending ? "Validando..." : "Validar y previsualizar"}
+          </button>
+          <button
+            className="button button--primary"
+            type="button"
+            disabled={!canCreate}
+            onClick={() => previewBody && onCreate(previewBody)}
+          >
+            {isCreating ? "Creando..." : "Crear lote"}
+          </button>
+        </div>
+        {preview ? <BatchPreview preview={preview} /> : null}
+      </div>
+    </div>
+  );
+}
+
+function BatchPreview({ preview }: { preview: BatchPreviewResponse }) {
+  return (
+    <section className="batch-preview" aria-label="Previsualización del lote">
+      <h4>{preview.valid ? "Preview válida" : "Preview con errores"}</h4>
+      {preview.errors.map((error) => (
+        <StatusMessage key={error} tone="error">{error}</StatusMessage>
+      ))}
+      <div className="batch-preview-list" role="list">
+        {preview.items.map((item) => (
+          <div className="batch-preview-row" role="listitem" key={item.index}>
+            <strong>#{item.index + 1}</strong>
+            <span>{item.source_url ?? "URL inválida"}</span>
+            <span>{item.requested_filename ?? "Sin nombre solicitado"}</span>
+            <span>{item.destination_path ? displayPath(item.destination_path) : "Destino inválido"}</span>
+            {item.errors.length > 0 ? <em>{item.errors.join(" ")}</em> : <em>Listo para encolar</em>}
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -335,4 +574,41 @@ function validateRequestedFilename(value: string): string {
     return "No incluyas la extensión del archivo; el sistema la determina automáticamente.";
   }
   return "";
+}
+
+function makeBatchExample(defaultDestinationPath: string): string {
+  return JSON.stringify(
+    {
+      default_destination_path: defaultDestinationPath || "prueba",
+      items: [
+        {
+          url: "https://www.youtube.com/watch?v=VIDEO_ID_1",
+          requested_filename: "Tema uno",
+        },
+        {
+          url: "https://www.youtube.com/watch?v=VIDEO_ID_2",
+          destination_path: "Rock/Directos",
+        },
+      ],
+    },
+    null,
+    2,
+  );
+}
+
+function formatBatchProgress(batch: DownloadBatchSummary): string {
+  const errorCount = batch.failed_count + batch.cancelled_count;
+  return `${batch.running_count} en curso · ${batch.completed_count} completadas · ${errorCount} con error · ${batch.queued_count} pendientes`;
+}
+
+function getBatchStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    queued: "En cola",
+    running: "En curso",
+    completed: "Completado",
+    completed_with_errors: "Con errores",
+    failed: "Fallido",
+    cancelled: "Cancelado",
+  };
+  return labels[status] ?? status;
 }

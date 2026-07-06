@@ -64,6 +64,52 @@ const downloadsResponse = {
   offset: 0,
 };
 
+const batchPreviewResponse = {
+  valid: true,
+  default_destination_path: "Rock",
+  total_items: 2,
+  items: [
+    {
+      index: 0,
+      source_url: "https://www.youtube.com/watch?v=VIDEO_ID_1",
+      requested_filename: "Tema uno",
+      destination_path: "Rock",
+      errors: [],
+    },
+    {
+      index: 1,
+      source_url: "https://www.youtube.com/watch?v=VIDEO_ID_2",
+      requested_filename: null,
+      destination_path: "Rock/Directos",
+      errors: [],
+    },
+  ],
+  errors: [],
+};
+
+const batchesResponse = {
+  items: [
+    {
+      id: "11111111-1111-4111-8111-111111111111",
+      profile_id: "pepe",
+      default_destination_path: "Rock",
+      total_items: 100,
+      queued_count: 83,
+      running_count: 2,
+      completed_count: 14,
+      failed_count: 1,
+      cancelled_count: 0,
+      status: "running",
+      created_at: "2026-07-01T12:00:00Z",
+      started_at: "2026-07-01T12:01:00Z",
+      finished_at: null,
+    },
+  ],
+  total: 1,
+  limit: 10,
+  offset: 0,
+};
+
 type FetchSpy = ReturnType<typeof mockApi>;
 
 describe("frontend rediseñado", () => {
@@ -152,6 +198,68 @@ describe("frontend rediseñado", () => {
     const postCall = findFetchCall(fetchMock, "/api/v1/downloads", "POST");
     expect(JSON.parse(String(postCall?.[1]?.body))).toMatchObject({
       requested_filename: "Sandunga verano",
+    });
+  });
+
+  test("abre diálogo de descarga por lote y muestra JSON inválido", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    renderApp(["/downloads"]);
+
+    await user.click(await screen.findByRole("button", { name: "Descarga por lote" }));
+    expect(screen.getByRole("dialog", { name: "Descarga por lote" })).toBeInTheDocument();
+    const textarea = screen.getByLabelText("JSON de descarga por lote");
+    await user.clear(textarea);
+    await user.paste("{");
+    await user.click(screen.getByRole("button", { name: "Validar y previsualizar" }));
+
+    expect(await screen.findByText(/JSON inválido/)).toBeInTheDocument();
+  });
+
+  test("previsualiza y crea una descarga por lote", async () => {
+    const fetchMock = mockApi();
+    const user = userEvent.setup();
+    renderApp(["/downloads"]);
+
+    await user.click(await screen.findByRole("button", { name: "Descarga por lote" }));
+    await user.click(screen.getByRole("button", { name: "Validar y previsualizar" }));
+
+    expect(await screen.findByText("Preview válida")).toBeInTheDocument();
+    expect(screen.getByText("Tema uno")).toBeInTheDocument();
+    expect(screen.getByText("/Rock/Directos")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Crear lote" }));
+
+    expect(await screen.findByText("Lote creado con 2 trabajos.")).toBeInTheDocument();
+    expect(findFetchCall(fetchMock, "/api/v1/profiles/pepe/download-batches", "POST")).toBeDefined();
+  });
+
+  test("invalida preview al modificar JSON", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    renderApp(["/downloads"]);
+
+    await user.click(await screen.findByRole("button", { name: "Descarga por lote" }));
+    await user.click(screen.getByRole("button", { name: "Validar y previsualizar" }));
+    expect(await screen.findByText("Preview válida")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("JSON de descarga por lote"), " ");
+
+    expect(screen.getByRole("button", { name: "Crear lote" })).toBeDisabled();
+  });
+
+  test("muestra lotes recientes y filtra trabajos por lote", async () => {
+    const fetchMock = mockApi();
+    const user = userEvent.setup();
+    renderApp(["/downloads"]);
+
+    expect(await screen.findByText("Lotes recientes")).toBeInTheDocument();
+    const progress = await screen.findByText("2 en curso · 14 completadas · 1 con error · 83 pendientes");
+    expect(progress).toBeInTheDocument();
+    await user.click(progress.closest("button")!);
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url).includes("batch_id=11111111-1111-4111-8111-111111111111")),
+      ).toBe(true);
     });
   });
 
@@ -410,10 +518,19 @@ function mockApi(
     moveStatus?: number;
     moveBody?: unknown;
     searchBody?: unknown;
+    previewBody?: unknown;
+    batchesBody?: unknown;
   } = {},
 ) {
   const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
+    if (url.includes("/profiles/pepe/download-batches/preview")) {
+      return jsonResponse(options.previewBody ?? batchPreviewResponse);
+    }
+    if (url.endsWith("/profiles/pepe/download-batches") && init?.method === "POST") {
+      return jsonResponse({ batch: { ...batchesResponse.items[0], total_items: 2 }, jobs: [] }, 201);
+    }
+    if (url.includes("/profiles/pepe/download-batches")) return jsonResponse(options.batchesBody ?? batchesResponse);
     if (url.includes("/profiles/pepe/search")) return jsonResponse(options.searchBody ?? librarySearchResponse);
     if (url.includes("/profiles/pepe/entries?path=Songbook")) return jsonResponse(songbookEntriesResponse);
     if (url.includes("/profiles/pepe/entries?path=Rock")) return jsonResponse(rockEntriesResponse);
@@ -455,6 +572,7 @@ function mockApi(
 function makeJob(id: string, status: string, progress: number | null, outputPath: string | null) {
   return {
     id,
+    batch_id: null,
     profile_id: "pepe",
     source_url: `https://www.youtube.com/watch?v=VIDEO_${id}`,
     destination_path: id === "2" ? "Rock/Clasicos" : "Rock",
@@ -473,6 +591,7 @@ function makeJob(id: string, status: string, progress: number | null, outputPath
 function makeLongJob() {
   return {
     id: "6",
+    batch_id: null,
     profile_id: "pepe",
     source_url: "https://www.youtube.com/watch?v=VIDEO_6",
     destination_path:

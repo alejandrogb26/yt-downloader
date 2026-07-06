@@ -143,7 +143,9 @@ Worker -> NFS -> publica fichero final sin sobrescribir
 Worker -> MariaDB -> completed / failed
 ```
 
-El worker actualiza `heartbeat_at` al reclamar el trabajo y durante la descarga. El fichero se descarga primero bajo `DOWNLOAD_STAGING_ROOT/<job_id>/` y no aparece en la biblioteca hasta que la descarga ha terminado y la copia al destino se ha completado. El temporal de publicación dentro de NFS es oculto y no aparece en el listado normal.
+El worker persistente reclama trabajos de la cola y ejecuta hasta `WORKER_CONCURRENCY` descargas en paralelo. Cada trabajo usa sesión de base de datos, instancia de yt-dlp y staging `DOWNLOAD_STAGING_ROOT/<job_id>/` aislados. Actualiza `heartbeat_at` al reclamar y durante la descarga; si un worker cae, los trabajos obsoletos se recuperan por timeout. El fichero no aparece en la biblioteca hasta que la descarga ha terminado y la copia al destino se ha completado. El temporal de publicación dentro de NFS es oculto y no aparece en el listado normal.
+
+Las descargas por lote crean una fila en `download_batches` y trabajos normales relacionados por `batch_id`. Los estados y contadores del lote se calculan a partir de sus trabajos para evitar desincronización.
 
 ## Política de descarga
 

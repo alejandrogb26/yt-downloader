@@ -28,6 +28,50 @@ export type LibrarySearchResponse = {
   results: LibraryEntry[];
 };
 
+export type BatchPreviewItem = {
+  index: number;
+  source_url: string | null;
+  requested_filename: string | null;
+  destination_path: string | null;
+  errors: string[];
+};
+
+export type BatchPreviewResponse = {
+  valid: boolean;
+  default_destination_path: string | null;
+  total_items: number;
+  items: BatchPreviewItem[];
+  errors: string[];
+};
+
+export type DownloadBatchSummary = {
+  id: string;
+  profile_id: string;
+  default_destination_path: string;
+  total_items: number;
+  queued_count: number;
+  running_count: number;
+  completed_count: number;
+  failed_count: number;
+  cancelled_count: number;
+  status: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
+export type DownloadBatchListResponse = {
+  items: DownloadBatchSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type CreatedDownloadBatchResponse = {
+  batch: DownloadBatchSummary;
+  jobs: DownloadJobListItem[];
+};
+
 export type CreateDirectoryRequest = {
   parent_path: string;
   name: string;
@@ -62,6 +106,7 @@ export type DownloadStatus = "queued" | "running" | "completed" | "failed" | "ca
 
 export type DownloadJobListItem = {
   id: string;
+  batch_id: string | null;
   profile_id: string;
   source_url: string;
   destination_path: string;
@@ -98,6 +143,15 @@ export type CreateDownloadRequest = {
   source_url: string;
   destination_path: string;
   requested_filename?: string | null;
+};
+
+export type BatchRequest = {
+  default_destination_path: string;
+  items: Array<{
+    url: string;
+    destination_path?: string;
+    requested_filename?: string | null;
+  }>;
 };
 
 export type CreatedDownloadJob = {

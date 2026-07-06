@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Index, String, Text, false
+from sqlalchemy import Boolean, ForeignKey, Index, String, Text, false
 from sqlalchemy.dialects.mysql import CHAR, DATETIME, INTEGER
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import expression
@@ -12,6 +12,7 @@ from sqlalchemy.sql import expression
 from yt_downloader_api.db.base import Base
 
 if TYPE_CHECKING:
+    from yt_downloader_api.db.models.download_batch import DownloadBatch
     from yt_downloader_api.db.models.download_job_event import DownloadJobEvent
 
 
@@ -36,10 +37,15 @@ class DownloadJob(Base):
     __table_args__ = (
         Index("ix_download_jobs_status_created_at", "status", "created_at"),
         Index("ix_download_jobs_profile_id_created_at", "profile_id", "created_at"),
+        Index("ix_download_jobs_batch_id_created_at", "batch_id", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(CHAR(36), primary_key=True)
     profile_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    batch_id: Mapped[str | None] = mapped_column(
+        CHAR(36),
+        ForeignKey("download_batches.id", ondelete="SET NULL"),
+    )
     source_url: Mapped[str] = mapped_column(Text, nullable=False)
     destination_relative_path: Mapped[str] = mapped_column(
         String(1024),
@@ -102,6 +108,7 @@ class DownloadJob(Base):
         back_populates="job",
         cascade="all, delete-orphan",
     )
+    batch: Mapped[DownloadBatch | None] = relationship(back_populates="jobs")
 
 
 Index(

@@ -1,5 +1,7 @@
 import subprocess
+import time
 from datetime import UTC, datetime, timedelta
+from threading import Lock
 
 import pytest
 
@@ -20,6 +22,7 @@ from yt_downloader_api.services.download_state import (
     InvalidDownloadStateTransitionError,
     validate_status_transition,
 )
+from yt_downloader_api.worker import main as worker_module
 from yt_downloader_api.worker.main import diagnose_queue_source, run_once
 from yt_downloader_api.worker.main import main as worker_main
 
@@ -230,6 +233,20 @@ class FailingStaleRepository(InMemoryDownloadQueueRepository):
         failed_at: datetime,
     ) -> int:
         raise DownloadQueueRepositoryError("simulated stale failure")
+
+
+class FakeWorkerSession:
+    def __init__(self, repository: InMemoryDownloadQueueRepository) -> None:
+        self.repository = repository
+
+    def __enter__(self) -> FakeWorkerSession:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def get(self, _model: object, job_id: str) -> DownloadJob | None:
+        return next((job for job in self.repository.jobs if job.id == job_id), None)
 
 
 class FailingClaimRepository(InMemoryDownloadQueueRepository):
@@ -646,6 +663,72 @@ def test_worker_run_once_marks_interrupted_job_failed(
     assert "interrupted" in capsys.readouterr().out
     assert repository.jobs[0].status == "failed"
     assert repository.jobs[0].error_code == "worker_interrupted"
+
+
+def test_persistent_worker_respects_concurrency_and_continues_after_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = InMemoryDownloadQueueRepository()
+    repository.jobs = [
+        make_job(
+            f"00000000-0000-4000-8000-00000000000{index}",
+            datetime(2026, 6, 28, tzinfo=UTC),
+        )
+        for index in range(1, 4)
+    ]
+    active_count = 0
+    max_active_count = 0
+    completed_count = 0
+    lock = Lock()
+    worker_module.stop_event.clear()
+
+    def session_factory() -> FakeWorkerSession:
+        return FakeWorkerSession(repository)
+
+    def repository_factory(
+        session: FakeWorkerSession,
+    ) -> InMemoryDownloadQueueRepository:
+        return session.repository
+
+    def execute_job(
+        _settings: Settings,
+        _repository: InMemoryDownloadQueueRepository,
+        _downloader: object,
+        job: DownloadJob,
+        _worker_id: str,
+    ) -> bool:
+        nonlocal active_count, completed_count, max_active_count
+        with lock:
+            active_count += 1
+            max_active_count = max(max_active_count, active_count)
+        time.sleep(0.03)
+        with lock:
+            active_count -= 1
+            completed_count += 1
+            if completed_count == 3:
+                worker_module.stop_event.set()
+        if job.id.endswith("2"):
+            raise RuntimeError("simulated worker failure")
+        return True
+
+    monkeypatch.setattr(worker_module, "get_session_factory", lambda: session_factory)
+    monkeypatch.setattr(worker_module, "DownloadQueueRepository", repository_factory)
+    monkeypatch.setattr(worker_module, "execute_download_job", execute_job)
+
+    exit_code = worker_module.run_persistent_worker(
+        Settings(
+            database_url="mysql+pymysql://user:pass@host:3306/db",
+            worker_id="worker-1",
+            worker_concurrency=2,
+            worker_queue_poll_interval_seconds=1,
+        )
+    )
+
+    assert exit_code == 0
+    assert max_active_count <= 2
+    assert completed_count == 3
+    assert len(repository.claimed_ids) == 3
+    worker_module.stop_event.clear()
 
 
 def test_worker_main_without_database_url(
