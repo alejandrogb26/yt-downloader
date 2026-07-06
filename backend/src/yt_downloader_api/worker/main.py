@@ -3,6 +3,7 @@ import logging
 import sys
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from signal import SIG_DFL, SIGINT, SIGTERM, signal
 from socket import gethostname
@@ -41,6 +42,15 @@ stop_event = Event()
 
 class WorkerInterrupted(Exception):
     """Raised when the worker receives a termination signal."""
+
+
+@dataclass(frozen=True)
+class ClaimedJobSnapshot:
+    id: str
+    profile_id: str
+    source_url: str
+    destination_relative_path: str
+    requested_filename: str | None
 
 
 class QueueDiagnosticSource(Protocol):
@@ -177,8 +187,8 @@ def run_persistent_worker(settings: Settings) -> int:
                     len(active) < settings.worker_concurrency
                     and not stop_event.is_set()
                 ):
-                    job = claim_job_for_worker(session_factory, worker_id)
-                    if job is None:
+                    job_id = claim_job_for_worker(session_factory, worker_id)
+                    if job_id is None:
                         if monotonic() - last_empty_log > 60:
                             logger.info("No queued jobs available.")
                             last_empty_log = monotonic()
@@ -186,7 +196,7 @@ def run_persistent_worker(settings: Settings) -> int:
                     future = executor.submit(
                         execute_claimed_job,
                         settings,
-                        job.id,
+                        job_id,
                         worker_id,
                     )
                     active.add(future)
@@ -218,35 +228,53 @@ def recover_stale_jobs(settings: Settings, session_factory) -> None:
             logger.warning("Recovered stale running jobs. count=%s", recovered_count)
 
 
-def claim_job_for_worker(session_factory, worker_id: str) -> DownloadJob | None:
+def claim_job_for_worker(session_factory, worker_id: str) -> str | None:
     with session_factory() as session:
         repository = DownloadQueueRepository(session)
         job = claim_next_queued_job(repository, worker_id)
         if job is None:
             return None
-        logger.info("Claimed job. job_id=%s", job.id)
-        return job
+        job_id = job.id
+        logger.info("Claimed job. job_id=%s", job_id)
+        return job_id
 
 
 def execute_claimed_job(settings: Settings, job_id: str, worker_id: str) -> bool:
     session_factory = get_session_factory()
-    with session_factory() as session:
-        repository = DownloadQueueRepository(session)
-        job = session.get(DownloadJob, job_id)
-        if job is None:
-            logger.warning("Claimed job disappeared. job_id=%s", job_id)
-            return False
-        try:
+    job = load_claimed_job_snapshot(session_factory, job_id, worker_id)
+    if job is None:
+        logger.warning(
+            "Claimed job disappeared or is no longer active. job_id=%s", job_id
+        )
+        return False
+
+    try:
+        with session_factory() as event_session:
+            event_repository = DownloadQueueRepository(event_session)
             add_running_job_event(
-                repository,
+                event_repository,
                 job.id,
                 worker_id,
                 "info",
                 "Download started.",
             )
+    except DownloadQueuePersistenceError:
+        logger.exception("Could not add download started event. job_id=%s", job.id)
+        mark_job_failed_with_new_session(
+            session_factory,
+            job.id,
+            worker_id,
+            "worker_event_failed",
+            "Download worker could not record job execution.",
+        )
+        return False
+
+    try:
+        with session_factory() as execution_session:
+            execution_repository = DownloadQueueRepository(execution_session)
             completed = execute_download_job(
                 settings,
-                repository,
+                execution_repository,
                 YtDlpAudioDownloader(),
                 job,
                 worker_id,
@@ -256,19 +284,61 @@ def execute_claimed_job(settings: Settings, job_id: str, worker_id: str) -> bool
             else:
                 logger.warning("Job failed. job_id=%s", job.id)
             return completed
-        except Exception:
-            logger.exception("Job failed unexpectedly. job_id=%s", job.id)
-            try:
-                mark_running_job_as_failed(
-                    repository,
-                    job.id,
-                    worker_id,
-                    "worker_unexpected_error",
-                    "Download worker failed unexpectedly.",
-                )
-            except DownloadQueuePersistenceError:
-                log_queue_exception("mark unexpected job failure")
-            return False
+    except Exception:
+        logger.exception("Job failed unexpectedly. job_id=%s", job.id)
+        mark_job_failed_with_new_session(
+            session_factory,
+            job.id,
+            worker_id,
+            "worker_unexpected_error",
+            "Download worker failed unexpectedly.",
+        )
+        return False
+
+
+def load_claimed_job_snapshot(
+    session_factory,
+    job_id: str,
+    worker_id: str,
+) -> ClaimedJobSnapshot | None:
+    with session_factory() as session:
+        job = session.get(DownloadJob, job_id)
+        if (
+            job is None
+            or job.status != DownloadJobStatus.RUNNING.value
+            or job.worker_id != worker_id
+        ):
+            return None
+        snapshot = ClaimedJobSnapshot(
+            id=job.id,
+            profile_id=job.profile_id,
+            source_url=job.source_url,
+            destination_relative_path=job.destination_relative_path,
+            requested_filename=job.requested_filename,
+        )
+        session.rollback()
+        return snapshot
+
+
+def mark_job_failed_with_new_session(
+    session_factory,
+    job_id: str,
+    worker_id: str,
+    error_code: str,
+    error_message: str,
+) -> None:
+    try:
+        with session_factory() as failure_session:
+            failure_repository = DownloadQueueRepository(failure_session)
+            mark_running_job_as_failed(
+                failure_repository,
+                job_id,
+                worker_id,
+                error_code,
+                error_message,
+            )
+    except DownloadQueuePersistenceError:
+        log_queue_exception("mark job as failed with fresh session")
 
 
 def diagnose_queue(settings: Settings, session: Session) -> int:

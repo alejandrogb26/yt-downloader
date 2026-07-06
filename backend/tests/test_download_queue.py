@@ -1,7 +1,7 @@
 import subprocess
 import time
 from datetime import UTC, datetime, timedelta
-from threading import Lock
+from threading import Event, Lock, Thread
 
 import pytest
 
@@ -247,6 +247,9 @@ class FakeWorkerSession:
 
     def get(self, _model: object, job_id: str) -> DownloadJob | None:
         return next((job for job in self.repository.jobs if job.id == job_id), None)
+
+    def rollback(self) -> None:
+        return None
 
 
 class FailingClaimRepository(InMemoryDownloadQueueRepository):
@@ -669,17 +672,21 @@ def test_persistent_worker_respects_concurrency_and_continues_after_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository = InMemoryDownloadQueueRepository()
+    job_ids = [f"00000000-0000-4000-8000-00000000000{index}" for index in range(1, 4)]
     repository.jobs = [
         make_job(
-            f"00000000-0000-4000-8000-00000000000{index}",
+            job_id,
             datetime(2026, 6, 28, tzinfo=UTC),
         )
-        for index in range(1, 4)
+        for job_id in job_ids
     ]
     active_count = 0
     max_active_count = 0
     completed_count = 0
     lock = Lock()
+    first_two_started = Event()
+    third_started = Event()
+    release_jobs = {job_id: Event() for job_id in job_ids}
     worker_module.stop_event.clear()
 
     def session_factory() -> FakeWorkerSession:
@@ -701,7 +708,26 @@ def test_persistent_worker_respects_concurrency_and_continues_after_failure(
         with lock:
             active_count += 1
             max_active_count = max(max_active_count, active_count)
-        time.sleep(0.03)
+            if active_count == 2:
+                first_two_started.set()
+            if job.id == job_ids[2]:
+                third_started.set()
+        release_jobs[job.id].wait(timeout=2)
+        mark_running_job_as_completed(
+            _repository,
+            job.id,
+            _worker_id,
+            CompletedDownloadJob(
+                title="Downloaded title",
+                output_relative_path=f"{job.id}.m4a",
+                source_format_id="140",
+                source_container="m4a",
+                source_audio_codec="aac",
+                output_container="m4a",
+                output_audio_codec="aac",
+            ),
+        )
+        time.sleep(0.01)
         with lock:
             active_count -= 1
             completed_count += 1
@@ -715,20 +741,107 @@ def test_persistent_worker_respects_concurrency_and_continues_after_failure(
     monkeypatch.setattr(worker_module, "DownloadQueueRepository", repository_factory)
     monkeypatch.setattr(worker_module, "execute_download_job", execute_job)
 
-    exit_code = worker_module.run_persistent_worker(
-        Settings(
-            database_url="mysql+pymysql://user:pass@host:3306/db",
-            worker_id="worker-1",
-            worker_concurrency=2,
-            worker_queue_poll_interval_seconds=1,
+    settings = Settings(
+        database_url="mysql+pymysql://user:pass@host:3306/db",
+        worker_id="worker-1",
+        worker_concurrency=2,
+        worker_queue_poll_interval_seconds=1,
+    )
+    result: dict[str, int] = {}
+    thread = Thread(
+        target=lambda: result.setdefault(
+            "exit_code",
+            worker_module.run_persistent_worker(settings),
         )
     )
+    thread.start()
 
-    assert exit_code == 0
+    assert first_two_started.wait(timeout=2)
+    with lock:
+        assert max_active_count == 2
+    assert len(repository.claimed_ids) == 2
+    assert repository.jobs[2].status == DownloadJobStatus.QUEUED.value
+
+    release_jobs[job_ids[0]].set()
+    assert third_started.wait(timeout=2)
+    assert len(repository.claimed_ids) == 3
+    assert repository.jobs[0].status == DownloadJobStatus.COMPLETED.value
+    assert repository.jobs[1].status == DownloadJobStatus.RUNNING.value
+    assert repository.jobs[2].status == DownloadJobStatus.RUNNING.value
+
+    release_jobs[job_ids[1]].set()
+    release_jobs[job_ids[2]].set()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert result["exit_code"] == 0
     assert max_active_count <= 2
     assert completed_count == 3
     assert len(repository.claimed_ids) == 3
     worker_module.stop_event.clear()
+
+
+def test_execute_claimed_job_marks_event_failure_with_fresh_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = InMemoryDownloadQueueRepository()
+    job_id = "00000000-0000-4000-8000-000000000001"
+    repository.jobs = [
+        make_job(
+            job_id,
+            datetime(2026, 6, 28, tzinfo=UTC),
+            status=DownloadJobStatus.RUNNING.value,
+            worker_id="worker-1",
+        )
+    ]
+    sessions: list[FakeWorkerSession] = []
+
+    class FailingEventRepository(InMemoryDownloadQueueRepository):
+        def __init__(self, source: InMemoryDownloadQueueRepository) -> None:
+            self.jobs = source.jobs
+            self.events = source.events
+            self.claimed_ids = source.claimed_ids
+
+        def add_running_job_event(
+            self,
+            job_id: str,
+            worker_id: str,
+            level: str,
+            message: str,
+            progress_percent: int | None,
+            created_at: datetime,
+        ) -> bool:
+            raise DownloadQueueRepositoryError("simulated event failure")
+
+    def session_factory() -> FakeWorkerSession:
+        session = FakeWorkerSession(repository)
+        sessions.append(session)
+        return session
+
+    def repository_factory(
+        session: FakeWorkerSession,
+    ) -> InMemoryDownloadQueueRepository:
+        if len(sessions) == 2:
+            return FailingEventRepository(session.repository)
+        return session.repository
+
+    def execute_job(*_args: object) -> bool:
+        raise AssertionError("download execution must not start after event failure")
+
+    monkeypatch.setattr(worker_module, "get_session_factory", lambda: session_factory)
+    monkeypatch.setattr(worker_module, "DownloadQueueRepository", repository_factory)
+    monkeypatch.setattr(worker_module, "execute_download_job", execute_job)
+
+    completed = worker_module.execute_claimed_job(
+        Settings(database_url="mysql+pymysql://user:pass@host:3306/db"),
+        job_id,
+        "worker-1",
+    )
+
+    assert completed is False
+    assert len(sessions) == 3
+    assert repository.jobs[0].status == DownloadJobStatus.FAILED.value
+    assert repository.jobs[0].error_code == "worker_event_failed"
 
 
 def test_worker_main_without_database_url(

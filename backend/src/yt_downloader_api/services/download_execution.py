@@ -6,10 +6,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from yt_downloader_api.core.config import Settings
-from yt_downloader_api.db.models import DownloadJob
 from yt_downloader_api.downloaders.base import (
     AudioDownloader,
     AudioDownloadResult,
@@ -42,6 +41,14 @@ DESTINATION_WRITE_FAILED_MESSAGE = "Downloaded file could not be saved."
 
 class DownloadExecutionError(Exception):
     """Raised when a download job cannot be completed safely."""
+
+
+class DownloadJobData(Protocol):
+    id: str
+    profile_id: str
+    source_url: str
+    destination_relative_path: str
+    requested_filename: str | None
 
 
 @dataclass(frozen=True)
@@ -106,7 +113,7 @@ def execute_download_job(
     settings: Settings,
     repository: DownloadQueue,
     downloader: AudioDownloader,
-    job: DownloadJob,
+    job: DownloadJobData,
     worker_id: str,
 ) -> bool:
     staging_directory = Path(settings.download_staging_root) / job.id
@@ -213,7 +220,7 @@ def get_current_profile(settings: Settings, profile_id: str) -> LibraryProfile:
 
 def publish_download_to_library(
     profile: LibraryProfile,
-    job: DownloadJob,
+    job: DownloadJobData,
     result: AudioDownloadResult,
 ) -> PublishedDownload:
     source_path = validate_staged_file(result.downloaded_file_path, job.id)
@@ -290,7 +297,7 @@ def iter_collision_filenames(target_directory: Path, filename: str):
 
 
 def build_download_filename(
-    job: DownloadJob,
+    job: DownloadJobData,
     result: AudioDownloadResult,
     extension: str,
 ) -> str:
