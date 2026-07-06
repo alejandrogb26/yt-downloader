@@ -10,6 +10,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import mysql
 
 revision: str = "20260706_0005"
 down_revision: str | None = "20260705_0004"
@@ -28,8 +29,8 @@ def upgrade() -> None:
             server_default="",
             nullable=False,
         ),
-        sa.Column("total_items", sa.INTEGER(unsigned=True), nullable=False),
-        sa.Column("created_at", sa.DATETIME(fsp=6), nullable=False),
+        sa.Column("total_items", mysql.INTEGER(unsigned=True), nullable=False),
+        sa.Column("created_at", mysql.DATETIME(fsp=6), nullable=False),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(
