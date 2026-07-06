@@ -136,7 +136,7 @@ def update_running_job_progress(
             datetime.now(UTC),
         )
     except DownloadQueueRepositoryError as exc:
-        log_queue_exception("update progress and heartbeat")
+        log_queue_exception("update progress")
         raise DownloadQueuePersistenceError from exc
 
 

@@ -311,3 +311,65 @@ async def test_search_limit_truncated_validation_hidden_and_symlink_exclusion(
     assert empty_query_response.json() == {"detail": "Invalid search query."}
     assert too_large_limit_response.status_code == 422
     assert too_large_limit_response.json() == {"detail": "Invalid search query."}
+
+
+@pytest.mark.anyio
+async def test_search_stops_after_confirming_truncation(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    library_root = tmp_path / "library"
+    later_directory = library_root / "zzz-later"
+    library_root.mkdir()
+    later_directory.mkdir()
+    for index in range(3):
+        (library_root / f"song-{index}.mp3").write_bytes(b"x")
+    (later_directory / "song-late.mp3").write_bytes(b"late")
+    configure_profiles(monkeypatch, tmp_path, library_root)
+    original_iterdir = Path.iterdir
+    visited: list[Path] = []
+
+    def observed_iterdir(path: Path):
+        visited.append(path)
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", observed_iterdir)
+
+    response = await client.get(
+        "/api/v1/profiles/pepe/search",
+        params={"q": "song", "limit": "2"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["truncated"] is True
+    assert [item["path"] for item in response.json()["results"]] == [
+        "song-0.mp3",
+        "song-1.mp3",
+    ]
+    assert later_directory not in visited
+
+
+@pytest.mark.anyio
+async def test_search_exact_limit_is_not_truncated(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    library_root = tmp_path / "library"
+    library_root.mkdir()
+    for index in range(2):
+        (library_root / f"song-{index}.mp3").write_bytes(b"x")
+    configure_profiles(monkeypatch, tmp_path, library_root)
+
+    response = await client.get(
+        "/api/v1/profiles/pepe/search",
+        params={"q": "song", "limit": "2"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["truncated"] is False
+    assert [item["path"] for item in response.json()["results"]] == [
+        "song-0.mp3",
+        "song-1.mp3",
+    ]

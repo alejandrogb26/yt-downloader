@@ -1,7 +1,8 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Self
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +19,7 @@ class Settings(BaseSettings):
     database_pool_recycle_seconds: int = 1800
     worker_id: str | None = None
     worker_stale_job_timeout_seconds: int = 900
+    worker_heartbeat_interval_seconds: int = 30
     worker_concurrency: int = 2
     worker_queue_poll_interval_seconds: int = 3
     download_staging_root: str = "/var/lib/yt-downloader/staging"
@@ -46,6 +48,32 @@ class Settings(BaseSettings):
                 "worker_queue_poll_interval_seconds must be between 1 and 60"
             )
         return value
+
+    @field_validator("worker_stale_job_timeout_seconds")
+    @classmethod
+    def validate_worker_stale_job_timeout_seconds(cls, value: int) -> int:
+        if value < 2:
+            raise ValueError("worker_stale_job_timeout_seconds must be at least 2")
+        return value
+
+    @field_validator("worker_heartbeat_interval_seconds")
+    @classmethod
+    def validate_worker_heartbeat_interval_seconds(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("worker_heartbeat_interval_seconds must be positive")
+        return value
+
+    @model_validator(mode="after")
+    def validate_worker_heartbeat_is_before_stale_timeout(self) -> Self:
+        if (
+            self.worker_heartbeat_interval_seconds
+            >= self.worker_stale_job_timeout_seconds
+        ):
+            raise ValueError(
+                "worker_heartbeat_interval_seconds must be lower than "
+                "worker_stale_job_timeout_seconds"
+            )
+        return self
 
     model_config = SettingsConfigDict(
         env_file=".env",

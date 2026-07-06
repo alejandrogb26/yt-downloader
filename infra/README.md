@@ -187,7 +187,13 @@ sudo systemctl enable --now yt-downloader-api.service
 sudo systemctl enable --now yt-downloader-worker.service
 ```
 
-El worker es un servicio persistente. Reclama trabajos hasta `WORKER_CONCURRENCY` y sondea la cola cada `WORKER_QUEUE_POLL_INTERVAL_SECONDS` cuando no hay capacidad o trabajo pendiente. Para migrar desde una instalación con timer one-shot:
+El worker es un servicio persistente y concurrente. Reclama trabajos hasta `WORKER_CONCURRENCY` y sondea la cola cada `WORKER_QUEUE_POLL_INTERVAL_SECONDS` cuando no hay capacidad o trabajo pendiente. Cada trabajo activo mantiene `heartbeat_at` cada `WORKER_HEARTBEAT_INTERVAL_SECONDS`; ese valor debe ser positivo y menor que `WORKER_STALE_JOB_TIMEOUT_SECONDS`, que se usa para recuperar trabajos `running` abandonados.
+
+`--once` queda reservado para ejecución manual o diagnóstico: procesa como máximo un trabajo y sale. No es el mecanismo operativo de producción.
+
+Ante `SIGTERM`, el worker deja de reclamar trabajos nuevos y espera a que finalicen los activos. Durante esa parada ordenada los heartbeats de trabajos activos continúan. La unidad `yt-downloader-worker.service` usa `TimeoutStopSec=1h`; si se supera, systemd puede terminar el proceso de forma forzada y la recuperación stale actuará en el siguiente arranque.
+
+Si existe una instalación antigua con timer one-shot, deshabilita el timer y usa el servicio persistente:
 
 ```bash
 sudo systemctl disable --now yt-downloader-worker.timer
@@ -204,16 +210,18 @@ systemctl status yt-downloader-worker.service
 journalctl -u yt-downloader-api.service -f
 journalctl -u yt-downloader-worker.service -f
 curl https://music.alejandrogb.local/api/v1/health
+curl https://music.alejandrogb.local/api/v1/health/ready
 curl -H 'Host: music.alejandrogb.local' http://IP_CT:8081/api/v1/health
+curl -H 'Host: music.alejandrogb.local' http://IP_CT:8081/api/v1/health/ready
 findmnt -T /mnt/music/alejandrogb
 findmnt -T /mnt/music/pepe
 ```
 
-El primer `curl` se ejecuta desde un cliente LAN y pasa por Nginx central. El segundo `curl` se ejecuta desde el CT para comprobar Caddy directamente sin depender del DNS público interno. Los comandos `findmnt` verifican montajes concretos de perfiles.
+`/api/v1/health` es liveness y solo confirma que FastAPI responde. `/api/v1/health/ready` comprueba MariaDB y configuración de perfiles/exclusiones sin recorrer NFS. Los primeros `curl` se ejecutan desde un cliente LAN y pasan por Nginx central. Los `curl` con `Host` se ejecutan desde el CT para comprobar Caddy directamente sin depender del DNS público interno. Los comandos `findmnt` verifican montajes concretos de perfiles.
 
 ## Rollback
 
-1. Deshabilita el timer: `sudo systemctl disable --now yt-downloader-worker.timer`.
+1. Si existe un timer antiguo, deshabilítalo: `sudo systemctl disable --now yt-downloader-worker.timer`.
 2. Detén worker y API: `sudo systemctl stop yt-downloader-worker.service yt-downloader-api.service`.
 3. Restaura el frontend anterior desde `/var/www/yt-downloader.previous`.
 4. Restaura copias anteriores de `/etc/yt-downloader`.

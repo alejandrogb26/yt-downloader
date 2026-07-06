@@ -285,7 +285,7 @@ def search_entries(
             file_system_entry = to_file_system_entry(entry, relative_directory_path)
             if safe_query in entry.name.casefold():
                 if len(matches) >= safe_limit:
-                    truncated = True
+                    return matches, True
                 else:
                     matches.append(file_system_entry)
             if entry.is_dir():
@@ -298,8 +298,6 @@ def search_entries(
             entry.path.casefold(),
         )
     )
-    if len(matches) > safe_limit:
-        return matches[:safe_limit], True
     return matches, truncated
 
 

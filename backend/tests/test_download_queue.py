@@ -122,7 +122,6 @@ class InMemoryDownloadQueueRepository:
         if job is None:
             return False
         job.progress_percent = progress_percent
-        job.heartbeat_at = updated_at
         job.updated_at = updated_at
         return True
 
@@ -266,6 +265,41 @@ class FailingClaimRepository(InMemoryDownloadQueueRepository):
         claimed_at: datetime,
     ) -> DownloadJob | None:
         raise DownloadQueueRepositoryError("simulated claim failure")
+
+
+class CountingHeartbeatRepository(InMemoryDownloadQueueRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.heartbeat_count = 0
+        self.heartbeat_event = Event()
+
+    def touch_job_heartbeat(
+        self,
+        job_id: str,
+        worker_id: str,
+        touched_at: datetime,
+    ) -> bool:
+        touched = super().touch_job_heartbeat(job_id, worker_id, touched_at)
+        if touched:
+            self.heartbeat_count += 1
+            self.heartbeat_event.set()
+        return touched
+
+
+class FailingHeartbeatRepository(CountingHeartbeatRepository):
+    def __init__(self, failing_job_id: str) -> None:
+        super().__init__()
+        self.failing_job_id = failing_job_id
+
+    def touch_job_heartbeat(
+        self,
+        job_id: str,
+        worker_id: str,
+        touched_at: datetime,
+    ) -> bool:
+        if job_id == self.failing_job_id:
+            raise DownloadQueueRepositoryError("simulated heartbeat failure")
+        return super().touch_job_heartbeat(job_id, worker_id, touched_at)
 
 
 class FakeDiagnosticSource:
@@ -543,16 +577,25 @@ def test_marks_running_job_as_failed_with_safe_error() -> None:
     assert repository.events[-1].message == "Audio download failed."
 
 
-def test_updates_progress_and_heartbeat_without_events() -> None:
+def test_updates_progress_without_heartbeat_or_events() -> None:
     repository = InMemoryDownloadQueueRepository()
     now = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
     job_id = "00000000-0000-4000-8000-000000000001"
-    repository.jobs = [make_job(job_id, now, status="running", worker_id="worker-1")]
+    original_heartbeat = now - timedelta(seconds=10)
+    repository.jobs = [
+        make_job(
+            job_id,
+            now,
+            status="running",
+            worker_id="worker-1",
+            heartbeat_at=original_heartbeat,
+        )
+    ]
 
     assert update_running_job_progress(repository, job_id, "worker-1", 42)
 
     assert repository.jobs[0].progress_percent == 42
-    assert repository.jobs[0].heartbeat_at is not None
+    assert repository.jobs[0].heartbeat_at == original_heartbeat
     assert repository.events == []
 
 
@@ -564,6 +607,16 @@ def test_worker_run_once_without_jobs(capsys: pytest.CaptureFixture[str]) -> Non
 
     assert exit_code == 0
     assert "No queued jobs available." in capsys.readouterr().out
+
+
+def test_worker_heartbeat_interval_must_be_lower_than_stale_timeout() -> None:
+    with pytest.raises(ValueError, match="worker_heartbeat_interval_seconds"):
+        Settings(
+            worker_heartbeat_interval_seconds=10,
+            worker_stale_job_timeout_seconds=10,
+        )
+    with pytest.raises(ValueError, match="worker_heartbeat_interval_seconds"):
+        Settings(worker_heartbeat_interval_seconds=0)
 
 
 def test_worker_logs_exception_when_stale_recovery_fails(
@@ -842,6 +895,280 @@ def test_execute_claimed_job_marks_event_failure_with_fresh_session(
     assert len(sessions) == 3
     assert repository.jobs[0].status == DownloadJobStatus.FAILED.value
     assert repository.jobs[0].error_code == "worker_event_failed"
+
+
+def test_active_job_heartbeat_updates_running_job_with_fresh_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = CountingHeartbeatRepository()
+    job_id = "00000000-0000-4000-8000-000000000001"
+    repository.jobs = [
+        make_job(
+            job_id,
+            datetime(2026, 6, 28, tzinfo=UTC),
+            status=DownloadJobStatus.RUNNING.value,
+            worker_id="worker-1",
+        )
+    ]
+    sessions: list[FakeWorkerSession] = []
+
+    def session_factory() -> FakeWorkerSession:
+        session = FakeWorkerSession(repository)
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(
+        worker_module,
+        "DownloadQueueRepository",
+        lambda session: session.repository,
+    )
+    heartbeat = worker_module.ActiveJobHeartbeat(
+        session_factory,
+        job_id,
+        "worker-1",
+        0.01,
+    )
+
+    heartbeat.start()
+    assert repository.heartbeat_event.wait(timeout=1)
+    heartbeat.stop()
+
+    assert repository.heartbeat_count >= 1
+    assert len(sessions) >= 1
+    assert repository.jobs[0].heartbeat_at is not None
+
+
+def test_active_job_heartbeat_stops_updating_terminal_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = CountingHeartbeatRepository()
+    job_id = "00000000-0000-4000-8000-000000000001"
+    repository.jobs = [
+        make_job(
+            job_id,
+            datetime(2026, 6, 28, tzinfo=UTC),
+            status=DownloadJobStatus.RUNNING.value,
+            worker_id="worker-1",
+        )
+    ]
+    monkeypatch.setattr(
+        worker_module,
+        "DownloadQueueRepository",
+        lambda session: session.repository,
+    )
+    heartbeat = worker_module.ActiveJobHeartbeat(
+        lambda: FakeWorkerSession(repository),
+        job_id,
+        "worker-1",
+        0.01,
+    )
+
+    heartbeat.start()
+    assert repository.heartbeat_event.wait(timeout=1)
+    repository.jobs[0].status = DownloadJobStatus.COMPLETED.value
+    terminal_heartbeat = repository.jobs[0].heartbeat_at
+    time.sleep(0.03)
+    heartbeat.stop()
+
+    assert repository.jobs[0].heartbeat_at == terminal_heartbeat
+
+
+def test_concurrent_active_job_heartbeats_use_independent_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = CountingHeartbeatRepository()
+    job_ids = [
+        "00000000-0000-4000-8000-000000000001",
+        "00000000-0000-4000-8000-000000000002",
+    ]
+    repository.jobs = [
+        make_job(
+            job_id,
+            datetime(2026, 6, 28, tzinfo=UTC),
+            status=DownloadJobStatus.RUNNING.value,
+            worker_id="worker-1",
+        )
+        for job_id in job_ids
+    ]
+    sessions: list[FakeWorkerSession] = []
+    lock = Lock()
+
+    def session_factory() -> FakeWorkerSession:
+        session = FakeWorkerSession(repository)
+        with lock:
+            sessions.append(session)
+        return session
+
+    monkeypatch.setattr(
+        worker_module,
+        "DownloadQueueRepository",
+        lambda session: session.repository,
+    )
+    heartbeats = [
+        worker_module.ActiveJobHeartbeat(session_factory, job_id, "worker-1", 0.01)
+        for job_id in job_ids
+    ]
+
+    for heartbeat in heartbeats:
+        heartbeat.start()
+    assert repository.heartbeat_event.wait(timeout=1)
+    time.sleep(0.03)
+    for heartbeat in heartbeats:
+        heartbeat.stop()
+
+    assert all(job.heartbeat_at is not None for job in repository.jobs)
+    assert len(sessions) >= 2
+    assert len({id(session) for session in sessions}) == len(sessions)
+
+
+def test_heartbeat_failure_does_not_stop_other_active_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failing_job_id = "00000000-0000-4000-8000-000000000001"
+    healthy_job_id = "00000000-0000-4000-8000-000000000002"
+    repository = FailingHeartbeatRepository(failing_job_id)
+    repository.jobs = [
+        make_job(
+            failing_job_id,
+            datetime(2026, 6, 28, tzinfo=UTC),
+            status=DownloadJobStatus.RUNNING.value,
+            worker_id="worker-1",
+        ),
+        make_job(
+            healthy_job_id,
+            datetime(2026, 6, 28, tzinfo=UTC),
+            status=DownloadJobStatus.RUNNING.value,
+            worker_id="worker-1",
+        ),
+    ]
+    monkeypatch.setattr(
+        worker_module,
+        "DownloadQueueRepository",
+        lambda session: session.repository,
+    )
+    failing_heartbeat = worker_module.ActiveJobHeartbeat(
+        lambda: FakeWorkerSession(repository),
+        failing_job_id,
+        "worker-1",
+        0.01,
+    )
+    healthy_heartbeat = worker_module.ActiveJobHeartbeat(
+        lambda: FakeWorkerSession(repository),
+        healthy_job_id,
+        "worker-1",
+        0.01,
+    )
+
+    failing_heartbeat.start()
+    healthy_heartbeat.start()
+    assert repository.heartbeat_event.wait(timeout=1)
+    failing_heartbeat.stop()
+    healthy_heartbeat.stop()
+
+    assert repository.jobs[0].heartbeat_at is None
+    assert repository.jobs[1].heartbeat_at is not None
+
+
+def test_autonomous_heartbeat_prevents_stale_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = CountingHeartbeatRepository()
+    job_id = "00000000-0000-4000-8000-000000000001"
+    old_heartbeat = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
+    repository.jobs = [
+        make_job(
+            job_id,
+            old_heartbeat,
+            status=DownloadJobStatus.RUNNING.value,
+            heartbeat_at=old_heartbeat,
+            worker_id="worker-1",
+        )
+    ]
+    monkeypatch.setattr(
+        worker_module,
+        "DownloadQueueRepository",
+        lambda session: session.repository,
+    )
+    heartbeat = worker_module.ActiveJobHeartbeat(
+        lambda: FakeWorkerSession(repository),
+        job_id,
+        "worker-1",
+        0.01,
+    )
+
+    heartbeat.start()
+    assert repository.heartbeat_event.wait(timeout=1)
+    heartbeat.stop()
+    recovered = mark_stale_running_jobs_as_failed(
+        repository, old_heartbeat + timedelta(seconds=1)
+    )
+
+    assert recovered == 0
+    assert repository.jobs[0].status == DownloadJobStatus.RUNNING.value
+
+
+def test_execute_claimed_job_heartbeats_during_long_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = CountingHeartbeatRepository()
+    job_id = "00000000-0000-4000-8000-000000000001"
+    repository.jobs = [
+        make_job(
+            job_id,
+            datetime(2026, 6, 28, tzinfo=UTC),
+            status=DownloadJobStatus.RUNNING.value,
+            worker_id="worker-1",
+        )
+    ]
+
+    def session_factory() -> FakeWorkerSession:
+        return FakeWorkerSession(repository)
+
+    def repository_factory(
+        session: FakeWorkerSession,
+    ) -> InMemoryDownloadQueueRepository:
+        return session.repository
+
+    def execute_job(
+        _settings: Settings,
+        _repository: InMemoryDownloadQueueRepository,
+        _downloader: object,
+        job: DownloadJob,
+        worker_id: str,
+    ) -> bool:
+        assert repository.heartbeat_event.wait(timeout=2)
+        return mark_running_job_as_completed(
+            _repository,
+            job.id,
+            worker_id,
+            CompletedDownloadJob(
+                title="Downloaded title",
+                output_relative_path=f"{job.id}.m4a",
+                source_format_id="140",
+                source_container="m4a",
+                source_audio_codec="aac",
+                output_container="m4a",
+                output_audio_codec="aac",
+            ),
+        )
+
+    monkeypatch.setattr(worker_module, "get_session_factory", lambda: session_factory)
+    monkeypatch.setattr(worker_module, "DownloadQueueRepository", repository_factory)
+    monkeypatch.setattr(worker_module, "execute_download_job", execute_job)
+
+    completed = worker_module.execute_claimed_job(
+        Settings(
+            database_url="mysql+pymysql://user:pass@host:3306/db",
+            worker_heartbeat_interval_seconds=1,
+            worker_stale_job_timeout_seconds=10,
+        ),
+        job_id,
+        "worker-1",
+    )
+
+    assert completed is True
+    assert repository.heartbeat_count >= 1
+    assert repository.jobs[0].status == DownloadJobStatus.COMPLETED.value
 
 
 def test_worker_main_without_database_url(

@@ -136,7 +136,6 @@ class DownloadQueueRepository:
                 if not is_current_running_job(job, worker_id):
                     return False
                 job.progress_percent = progress_percent
-                job.heartbeat_at = updated_at
                 job.updated_at = updated_at
             return True
         except SQLAlchemyError as exc:

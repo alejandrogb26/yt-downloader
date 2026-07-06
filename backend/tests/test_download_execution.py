@@ -43,7 +43,6 @@ class InMemoryDownloadQueueRepository:
         if not self.is_current_job(job_id, worker_id):
             return False
         self.job.progress_percent = progress_percent
-        self.job.heartbeat_at = updated_at
         self.job.updated_at = updated_at
         self.progress_updates.append(progress_percent)
         return True
@@ -377,8 +376,9 @@ def test_calculates_progress_from_total_bytes_and_estimate() -> None:
     )
 
 
-def test_progress_reporter_limits_writes_and_updates_heartbeat() -> None:
+def test_progress_reporter_limits_writes_without_updating_heartbeat() -> None:
     job = make_job(Path("/tmp"))
+    job.heartbeat_at = datetime(2026, 7, 1, 11, 59, tzinfo=UTC)
     repository = InMemoryDownloadQueueRepository(job)
     times = iter(
         [
@@ -396,7 +396,7 @@ def test_progress_reporter_limits_writes_and_updates_heartbeat() -> None:
     reporter({"status": "downloading"})
 
     assert repository.progress_updates == [None, 5, None]
-    assert job.heartbeat_at is not None
+    assert job.heartbeat_at == datetime(2026, 7, 1, 11, 59, tzinfo=UTC)
     assert repository.events == []
 
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from signal import SIG_DFL, SIGINT, SIGTERM, signal
 from socket import gethostname
-from threading import Event
+from threading import Event, Thread
 from time import monotonic
 from typing import Protocol
 from uuid import uuid4
@@ -30,6 +30,7 @@ from yt_downloader_api.services.download_queue import (
     claim_next_queued_job,
     mark_running_job_as_failed,
     mark_stale_running_jobs_as_failed,
+    touch_job_heartbeat,
 )
 
 INTERRUPTED_ERROR_CODE = "worker_interrupted"
@@ -51,6 +52,55 @@ class ClaimedJobSnapshot:
     source_url: str
     destination_relative_path: str
     requested_filename: str | None
+
+
+class ActiveJobHeartbeat:
+    def __init__(
+        self,
+        session_factory,
+        job_id: str,
+        worker_id: str,
+        interval_seconds: int,
+    ) -> None:
+        self.session_factory = session_factory
+        self.job_id = job_id
+        self.worker_id = worker_id
+        self.interval_seconds = interval_seconds
+        self.stop_event = Event()
+        self.thread = Thread(
+            target=self.run,
+            name=f"yt-downloader-heartbeat-{job_id}",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        self.thread.join(timeout=self.interval_seconds + 1)
+
+    def run(self) -> None:
+        while not self.stop_event.wait(self.interval_seconds):
+            try:
+                with self.session_factory() as session:
+                    repository = DownloadQueueRepository(session)
+                    touched = touch_job_heartbeat(
+                        repository,
+                        self.job_id,
+                        self.worker_id,
+                    )
+            except DownloadQueuePersistenceError:
+                log_queue_exception("autonomous heartbeat")
+                continue
+            except Exception:
+                logger.exception("Autonomous heartbeat failed unexpectedly.")
+                continue
+            if not touched:
+                logger.info(
+                    "Stopping heartbeat for non-running job. job_id=%s", self.job_id
+                )
+                return
 
 
 class QueueDiagnosticSource(Protocol):
@@ -270,20 +320,30 @@ def execute_claimed_job(settings: Settings, job_id: str, worker_id: str) -> bool
         return False
 
     try:
-        with session_factory() as execution_session:
-            execution_repository = DownloadQueueRepository(execution_session)
-            completed = execute_download_job(
-                settings,
-                execution_repository,
-                YtDlpAudioDownloader(),
-                job,
-                worker_id,
-            )
-            if completed:
-                logger.info("Job completed. job_id=%s", job.id)
-            else:
-                logger.warning("Job failed. job_id=%s", job.id)
-            return completed
+        heartbeat = ActiveJobHeartbeat(
+            session_factory,
+            job.id,
+            worker_id,
+            settings.worker_heartbeat_interval_seconds,
+        )
+        heartbeat.start()
+        try:
+            with session_factory() as execution_session:
+                execution_repository = DownloadQueueRepository(execution_session)
+                completed = execute_download_job(
+                    settings,
+                    execution_repository,
+                    YtDlpAudioDownloader(),
+                    job,
+                    worker_id,
+                )
+                if completed:
+                    logger.info("Job completed. job_id=%s", job.id)
+                else:
+                    logger.warning("Job failed. job_id=%s", job.id)
+                return completed
+        finally:
+            heartbeat.stop()
     except Exception:
         logger.exception("Job failed unexpectedly. job_id=%s", job.id)
         mark_job_failed_with_new_session(

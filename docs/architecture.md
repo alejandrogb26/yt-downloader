@@ -6,7 +6,7 @@
 
 - Frontend: aplicación React/Vite separada para seleccionar perfiles, navegar y gestionar operaciones básicas de biblioteca, elegir destino, crear trabajos y consultar estados.
 - Backend: API FastAPI con Pydantic v2. Actualmente incluye configuración base, `GET /api/v1/health`, `GET /api/v1/profiles`, navegación con `GET /api/v1/profiles/{profile_id}/entries`, creación de directorios con `POST /api/v1/profiles/{profile_id}/directories`, renombrado con `PATCH /api/v1/profiles/{profile_id}/entries/rename`, movimiento con `POST /api/v1/profiles/{profile_id}/entries/move`, envío a papelera con `DELETE /api/v1/profiles/{profile_id}/entries` y endpoints para crear y consultar trabajos de descarga.
-- Worker de descargas: proceso independiente one-shot para reclamar un trabajo de MariaDB, descargar una pista de audio con `yt-dlp`, publicar el resultado en NFS y finalizar el estado.
+- Worker de descargas: proceso independiente persistente y concurrente para reclamar trabajos de MariaDB, descargar pistas de audio con `yt-dlp`, publicar resultados en NFS y finalizar estados. Conserva `--once` solo como modo manual o de diagnóstico.
 - MariaDB: base de datos para trabajos de descarga, eventos, estados e historial. La capa ORM y las migraciones iniciales ya están preparadas.
 - Almacenamiento NFS: ubicaciones compartidas por perfil para archivos descargados.
 - Infraestructura: plantillas para Nginx central con HTTPS, Caddy HTTP interno en el CT y servicios systemd en `infra/`.
@@ -38,7 +38,7 @@ Caddy en CT
                     ↓
                  MariaDB externa
                     ↑
-worker systemd timer → staging local → NFS por perfil
+worker systemd persistente → staging local → NFS por perfil
 ```
 
 FastAPI no queda accesible desde la red: escucha en `127.0.0.1:8080`. El DNS interno `music.alejandrogb.local` debe resolver al Nginx central. Nginx es el único componente que escucha en `443` para ese nombre, termina HTTPS y reenvía HTTP interno a `IP_CT:8081`. Caddy en el CT no usa certificados, escucha solo en la IP real del CT y sirve el build estático; reenvía únicamente `/api/*` conservando el prefijo `/api`.
@@ -100,7 +100,7 @@ El sistema de archivos NFS será la fuente de verdad de las bibliotecas. Todaví
 
 ## Persistencia y flujo futuro
 
-La API FastAPI usa MariaDB para registrar trabajos de descarga y consultar sus eventos. El worker one-shot también usa MariaDB para tomar trabajos, actualizar progreso, registrar eventos y cerrar estados.
+La API FastAPI usa MariaDB para registrar trabajos de descarga y consultar sus eventos. El worker persistente también usa MariaDB para tomar trabajos, actualizar progreso, mantener heartbeat, registrar eventos y cerrar estados.
 
 Flujo previsto:
 
@@ -133,19 +133,32 @@ Cliente -> FastAPI -> MariaDB
 
 La API solo registra el trabajo en cola. No ejecuta yt-dlp, FFmpeg ni procesos externos.
 
-Flujo actual del worker one-shot:
+Flujo actual del worker persistente:
 
 ```text
 Worker -> MariaDB -> marca running obsoletos como failed
-Worker -> MariaDB -> reclama como máximo un queued -> running
+Worker -> MariaDB -> reclama queued hasta WORKER_CONCURRENCY -> running
+Worker -> heartbeat autónomo por trabajo activo
 Worker -> staging local -> descarga audio con yt-dlp
 Worker -> NFS -> publica fichero final sin sobrescribir
 Worker -> MariaDB -> completed / failed
 ```
 
-El worker persistente reclama trabajos de la cola y ejecuta hasta `WORKER_CONCURRENCY` descargas en paralelo. Cada trabajo usa sesión de base de datos, instancia de yt-dlp y staging `DOWNLOAD_STAGING_ROOT/<job_id>/` aislados. Actualiza `heartbeat_at` al reclamar y durante la descarga; si un worker cae, los trabajos obsoletos se recuperan por timeout. El fichero no aparece en la biblioteca hasta que la descarga ha terminado y la copia al destino se ha completado. El temporal de publicación dentro de NFS es oculto y no aparece en el listado normal.
+El worker persistente reclama trabajos de la cola y ejecuta hasta `WORKER_CONCURRENCY` descargas en paralelo. Cada trabajo usa instancia de `yt-dlp`, staging `DOWNLOAD_STAGING_ROOT/<job_id>/` y sesiones SQLAlchemy aisladas. `WORKER_QUEUE_POLL_INTERVAL_SECONDS` controla el sondeo cuando no hay trabajo o capacidad. `WORKER_HEARTBEAT_INTERVAL_SECONDS` controla un heartbeat autónomo por trabajo activo y debe ser menor que `WORKER_STALE_JOB_TIMEOUT_SECONDS`. El heartbeat no depende de eventos ni de hooks de progreso, por lo que sigue activo durante pausas de descarga, copia a NFS y resolución de colisiones. Si un worker cae, los trabajos obsoletos se recuperan por timeout. El fichero no aparece en la biblioteca hasta que la descarga ha terminado y la copia al destino se ha completado. El temporal de publicación dentro de NFS es oculto y no aparece en el listado normal.
+
+Ante SIGTERM, el worker deja de reclamar trabajos nuevos, pero espera a que los trabajos activos terminen. Durante esa espera ordenada los heartbeats autónomos continúan para evitar que otro ciclo de recuperación marque esos trabajos como obsoletos.
 
 Las descargas por lote crean una fila en `download_batches` y trabajos normales relacionados por `batch_id`. Los estados y contadores del lote se calculan a partir de sus trabajos para evitar desincronización.
+
+## Health checks
+
+`GET /api/v1/health` es liveness: responde si el proceso FastAPI está vivo y no depende de MariaDB, NFS ni YouTube.
+
+`GET /api/v1/health/ready` es readiness: realiza una consulta ligera `SELECT 1` contra MariaDB y valida que se puedan cargar la configuración de perfiles y exclusiones de biblioteca. No recorre montajes NFS, no lista bibliotecas, no ejecuta migraciones y no expone rutas absolutas ni secretos. Devuelve `200` con `status=ready` si todo está disponible y `503` con checks públicos si alguna dependencia no está lista.
+
+## Búsqueda de biblioteca
+
+La búsqueda global de biblioteca recorre entradas visibles del perfil en un orden estable. Cuando se solicita `limit`, devuelve como máximo ese número de resultados. Si encuentra una coincidencia adicional, devuelve `truncated=true` y detiene el recorrido sin visitar directorios pendientes. En resultados truncados se prioriza evitar I/O NFS innecesario sobre calcular una ordenación global completa de todo el árbol.
 
 ## Política de descarga
 

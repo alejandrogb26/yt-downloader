@@ -45,7 +45,7 @@ Estados del trabajo:
 - `failed`: terminó con error o fue recuperado como obsoleto.
 - `cancelled`: reservado para cancelaciones futuras.
 
-El worker reclama trabajos `queued` mediante MariaDB y los pasa a `running` con `worker_id`, `started_at` y `heartbeat_at`. Durante la descarga actualiza `progress_percent`, `heartbeat_at` y `updated_at` de forma limitada para evitar escrituras excesivas. Si al arrancar detecta trabajos `running` con `heartbeat_at` anterior al umbral configurado, o sin heartbeat y `updated_at` antiguo, los marca como `failed` con `error_code = worker_interrupted`.
+El worker reclama trabajos `queued` mediante MariaDB y los pasa a `running` con `worker_id`, `started_at` y `heartbeat_at`. Durante la descarga actualiza `progress_percent` de forma limitada para evitar escrituras excesivas y mantiene `heartbeat_at` con un mecanismo autónomo independiente del progreso. Si detecta trabajos `running` con `heartbeat_at` anterior al umbral configurado los marca como `failed` con `error_code = worker_interrupted`.
 
 El índice `(status, heartbeat_at)` acelera la búsqueda de trabajos `running` obsoletos. El índice `(status, created_at)` se usa para reclamar trabajos `queued` en orden de creación.
 

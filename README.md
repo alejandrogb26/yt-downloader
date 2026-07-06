@@ -10,7 +10,7 @@
 - MariaDB: base de datos relacional para trabajos de descarga, eventos e historial.
 - Almacenamiento NFS: destino compartido para los archivos descargados.
 
-Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la creación segura de directorios, el renombrado seguro de ficheros/directorios, el movimiento de entradas dentro de un mismo perfil, el envío de entradas a papelera, la base ORM/Alembic, el registro de trabajos de descarga en cola, la consulta de trabajos/eventos, un worker one-shot que descarga una única pista de audio por ejecución, un frontend React separado y plantillas de despliegue sin Docker en `infra/`. El frontend permite crear trabajos, listar la biblioteca, seleccionar destino, crear carpetas, renombrar entradas, mover entradas dentro del perfil y enviar entradas a papelera. No se incluye autenticación, daemon permanente, cancelación ni reintentos automáticos.
+Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la búsqueda global por perfil, exclusiones de biblioteca, operaciones seguras sobre entradas, la base ORM/Alembic, trabajos individuales, descargas por lote, consulta de trabajos/eventos, un worker persistente concurrente, un frontend React separado y plantillas de despliegue sin Docker en `infra/`. El frontend permite crear trabajos, crear lotes, listar la biblioteca, seleccionar destino, crear carpetas, renombrar entradas, mover entradas dentro del perfil y enviar entradas a papelera. No se incluye autenticación, cancelación ni reintentos automáticos.
 
 Topología de despliegue prevista en LAN con CT LXC:
 
@@ -25,7 +25,7 @@ Caddy en CT
                     ↓
                  MariaDB externa
                     ↑
-worker systemd timer -> staging local -> NFS por perfil
+worker systemd persistente -> staging local -> NFS por perfil
 ```
 
 El DNS interno `music.alejandrogb.local` debe resolver al Nginx central, no al CT. Nginx termina HTTPS con el certificado gestionado por el administrador y reenvía HTTP interno al CT en TCP `8081`. Caddy no usa certificados y debe escuchar solo en la IP real del CT. FastAPI escucha solo en `127.0.0.1:8080`. No expongas el servicio a Internet mientras no exista autenticación y una política de seguridad completa.
@@ -62,7 +62,7 @@ MariaDB almacena la política solicitada y el formato técnico realmente obtenid
 
 El worker descarga primero en staging local (`DOWNLOAD_STAGING_ROOT`, por defecto `/var/lib/yt-downloader/staging`) bajo un directorio único por trabajo. Solo cuando la descarga termina correctamente copia el fichero a un temporal oculto dentro del destino NFS del perfil y lo publica sin sobrescribir archivos existentes. El staging no debe estar dentro de ninguna biblioteca de perfil ni bajo `/mnt/music`.
 
-El esquema se aplica con Alembic. La API no crea tablas al arrancar y `GET /api/v1/health` funciona aunque `DATABASE_URL` no esté configurada.
+El esquema se aplica con Alembic. La API no crea tablas al arrancar y `GET /api/v1/health` funciona aunque `DATABASE_URL` no esté configurada. `GET /api/v1/health/ready` comprueba de forma ligera MariaDB y la configuración de perfiles/exclusiones para saber si la aplicación está lista para operar.
 
 Hay un ejemplo versionable en `config/profiles.example.json`. El fichero real `config/profiles.json` está ignorado por Git. Las exclusiones administradas del navegador de biblioteca se configuran con `LIBRARY_EXCLUSIONS_CONFIG_PATH`; en producción apunta a `/etc/yt-downloader/library-exclusions.json` y hay un ejemplo en `infra/config/library-exclusions.json.example`.
 
@@ -129,13 +129,17 @@ npm run build --prefix frontend
 
 El build del frontend queda en `frontend/dist/` y puede servirse con Caddy usando las plantillas de `infra/`.
 
-Ejecutar una pasada del worker one-shot:
+Ejecutar una pasada manual del worker con `--once`:
 
 ```bash
-uv run --project backend python -m yt_downloader_api.worker.main
+uv run --project backend python -m yt_downloader_api.worker.main --once
 ```
 
-El worker requiere `DATABASE_URL`, `PROFILES_CONFIG_PATH` y acceso de escritura a `DOWNLOAD_STAGING_ROOT` y a la biblioteca destino. No aplica migraciones automáticamente. Para fijar un identificador estable se puede configurar `WORKER_ID`; si falta, se genera uno a partir del hostname. En producción es un servicio persistente con concurrencia global configurable mediante `WORKER_CONCURRENCY` y sondeo con `WORKER_QUEUE_POLL_INTERVAL_SECONDS`.
+`--once` existe para diagnóstico o ejecución manual: recupera stale jobs, procesa como máximo un trabajo y sale. No es el mecanismo operativo de producción.
+
+El worker persistente requiere `DATABASE_URL`, `PROFILES_CONFIG_PATH` y acceso de escritura a `DOWNLOAD_STAGING_ROOT` y a la biblioteca destino. No aplica migraciones automáticamente. Para fijar un identificador estable se puede configurar `WORKER_ID`; si falta, se genera uno a partir del hostname. En producción la concurrencia global del proceso se configura con `WORKER_CONCURRENCY`, el sondeo con `WORKER_QUEUE_POLL_INTERVAL_SECONDS`, el heartbeat autónomo con `WORKER_HEARTBEAT_INTERVAL_SECONDS` y la recuperación de trabajos obsoletos con `WORKER_STALE_JOB_TIMEOUT_SECONDS`. El intervalo de heartbeat debe ser positivo y menor que el timeout stale.
+
+Ante SIGTERM, systemd solicita parada ordenada: el worker deja de reclamar trabajos nuevos y espera a que terminen los trabajos activos. Mientras espera, cada trabajo activo mantiene su heartbeat autónomo. `TimeoutStopSec` en la unidad limita cuánto puede durar esa espera antes de que systemd fuerce la terminación.
 
 Levantar la API usando el ejemplo de perfiles local, sin modificar `/etc`:
 
@@ -143,11 +147,14 @@ Levantar la API usando el ejemplo de perfiles local, sin modificar `/etc`:
 PROFILES_CONFIG_PATH="$PWD/config/profiles.example.json" uv run --project backend uvicorn yt_downloader_api.main:app --host 127.0.0.1 --port 8080 --reload
 ```
 
-Comprobar health check:
+Comprobar liveness y readiness:
 
 ```bash
 curl http://127.0.0.1:8080/api/v1/health
+curl http://127.0.0.1:8080/api/v1/health/ready
 ```
+
+`/api/v1/health` es un liveness barato: no depende de MariaDB ni de NFS. `/api/v1/health/ready` comprueba conectividad ligera con MariaDB y validación de configuración de perfiles y exclusiones; no recorre NFS, no ejecuta migraciones y no contacta YouTube.
 
 Comprobar perfiles:
 
@@ -218,7 +225,7 @@ uv run --project backend uvicorn yt_downloader_api.main:app --host 127.0.0.1 --p
 curl -X POST http://127.0.0.1:8080/api/v1/downloads \
   -H 'Content-Type: application/json' \
   -d '{"profile_id":"pepe","source_url":"https://www.youtube.com/watch?v=VIDEO_ID","destination_path":"Rock/Clasicos"}'
-uv run --project backend python -m yt_downloader_api.worker.main
+uv run --project backend python -m yt_downloader_api.worker.main --once
 ```
 
 ## Docker
