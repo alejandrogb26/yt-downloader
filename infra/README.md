@@ -15,7 +15,7 @@ Caddy en CT
                     ↓
                  MariaDB externa
                     ↑
-worker systemd timer → staging local → NFS por perfil
+worker systemd persistente → staging local → NFS por perfil
 ```
 
 El DNS interno `music.alejandrogb.local` debe resolver al Nginx central, no al CT. Nginx es el único componente que escucha en `443` para ese nombre, termina HTTPS con el certificado gestionado por el administrador y reenvía HTTP interno al CT en TCP `8081`.
@@ -181,22 +181,26 @@ Instalar unidades:
 ```bash
 sudo install -m 0644 infra/systemd/yt-downloader-api.service /etc/systemd/system/
 sudo install -m 0644 infra/systemd/yt-downloader-worker.service /etc/systemd/system/
-sudo install -m 0644 infra/systemd/yt-downloader-worker.timer /etc/systemd/system/
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now yt-downloader-api.service
-sudo systemctl enable --now yt-downloader-worker.timer
+sudo systemctl enable --now yt-downloader-worker.service
 ```
 
-El timer lanza el worker 20 segundos después del arranque y luego 15 segundos después de que termine la ejecución anterior. El worker procesa como máximo un trabajo por ejecución. Una descarga larga mantiene el servicio activo; el timer no debe solapar dos descargas iniciadas por él. Si no hay trabajos pendientes, el worker termina y el timer vuelve a comprobar la cola.
+El worker es un servicio persistente. Reclama trabajos hasta `WORKER_CONCURRENCY` y sondea la cola cada `WORKER_QUEUE_POLL_INTERVAL_SECONDS` cuando no hay capacidad o trabajo pendiente. Para migrar desde una instalación con timer one-shot:
+
+```bash
+sudo systemctl disable --now yt-downloader-worker.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now yt-downloader-worker.service
+```
 
 ## Comprobación
 
 ```bash
 systemctl status caddy
 systemctl status yt-downloader-api.service
-systemctl status yt-downloader-worker.timer
-systemctl list-timers yt-downloader-worker.timer
+systemctl status yt-downloader-worker.service
 journalctl -u yt-downloader-api.service -f
 journalctl -u yt-downloader-worker.service -f
 curl https://music.alejandrogb.local/api/v1/health

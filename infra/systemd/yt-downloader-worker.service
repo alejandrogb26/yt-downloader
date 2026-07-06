@@ -1,18 +1,20 @@
 [Unit]
-Description=yt-downloader one-shot worker
+Description=yt-downloader persistent concurrent worker
 After=network-online.target remote-fs.target
 Wants=network-online.target remote-fs.target
 RequiresMountsFor=/var/lib/yt-downloader/staging
 
 [Service]
-Type=oneshot
+Type=simple
 User=yt-downloader
 Group=yt-downloader
 WorkingDirectory=/opt/yt-downloader/backend
 EnvironmentFile=/etc/yt-downloader/yt-downloader.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/yt-downloader/backend/.venv/bin/python -m yt_downloader_api.worker.main
-TimeoutStartSec=infinity
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=1h
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
@@ -20,3 +22,6 @@ ProtectSystem=strict
 UMask=0027
 ReadOnlyPaths=/opt/yt-downloader /etc/yt-downloader
 ReadWritePaths=/var/lib/yt-downloader /mnt/music
+
+[Install]
+WantedBy=multi-user.target

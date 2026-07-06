@@ -10,7 +10,7 @@ import pytest
 
 from yt_downloader_api.api.routes.downloads import get_download_job_repository
 from yt_downloader_api.core.config import get_settings
-from yt_downloader_api.db.models import DownloadJob
+from yt_downloader_api.db.models import DownloadBatch, DownloadJob
 from yt_downloader_api.main import app
 from yt_downloader_api.repositories.download_jobs import DownloadJobRepositoryError
 
@@ -18,6 +18,7 @@ from yt_downloader_api.repositories.download_jobs import DownloadJobRepositoryEr
 class FakeDownloadJobRepository:
     def __init__(self) -> None:
         self.jobs: list[DownloadJob] = []
+        self.batches: list[DownloadBatch] = []
         self.events: list[dict[str, object]] = []
         self.calls = 0
         self.raise_on_create = False
@@ -41,6 +42,59 @@ class FakeDownloadJobRepository:
             }
         )
         return job
+
+    def create_batch_with_jobs_and_events(
+        self,
+        batch: DownloadBatch,
+        jobs: list[DownloadJob],
+        created_at: datetime,
+    ) -> DownloadBatch:
+        self.calls += 1
+        if self.raise_on_create:
+            raise DownloadJobRepositoryError
+        self.batches.append(batch)
+        self.jobs.extend(jobs)
+        batch.jobs = jobs
+        for job in jobs:
+            self.events.append(
+                {
+                    "job_id": job.id,
+                    "created_at": created_at,
+                    "level": "info",
+                    "message": "Download job queued.",
+                    "progress_percent": None,
+                }
+            )
+        return batch
+
+    def list_jobs(
+        self,
+        limit: int,
+        offset: int,
+        profile_id: str | None = None,
+        status: str | None = None,
+        batch_id: str | None = None,
+    ) -> tuple[list[DownloadJob], int]:
+        jobs = self.jobs
+        if profile_id is not None:
+            jobs = [job for job in jobs if job.profile_id == profile_id]
+        if status is not None:
+            jobs = [job for job in jobs if job.status == status]
+        if batch_id is not None:
+            jobs = [job for job in jobs if job.batch_id == batch_id]
+        return jobs[offset : offset + limit], len(jobs)
+
+    def list_batches(
+        self,
+        profile_id: str,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[DownloadBatch], int]:
+        batches = [batch for batch in self.batches if batch.profile_id == profile_id]
+        return batches[offset : offset + limit], len(batches)
+
+    def get_batch(self, batch_id: str) -> DownloadBatch | None:
+        return next((batch for batch in self.batches if batch.id == batch_id), None)
 
 
 @pytest.fixture(autouse=True)
@@ -169,6 +223,213 @@ async def test_create_download_job_success(
         "progress_percent": None,
     }
     assert fake_repository.calls == 1
+
+
+@pytest.mark.anyio
+async def test_preview_download_batch_validates_without_persisting(
+    client: httpx.AsyncClient,
+    fake_repository: FakeDownloadJobRepository,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    library_root = tmp_path / "library"
+    (library_root / "prueba").mkdir(parents=True)
+    (library_root / "Rock" / "Directos").mkdir(parents=True)
+    configure_profiles(monkeypatch, tmp_path, [profile_config(library_root)])
+
+    response = await client.post(
+        "/api/v1/profiles/pepe/download-batches/preview",
+        json={
+            "default_destination_path": "prueba",
+            "items": [
+                {
+                    "url": "https://youtu.be/VIDEO_ID_1",
+                    "requested_filename": "Tema uno",
+                },
+                {
+                    "url": "https://www.youtube.com/watch?v=VIDEO_ID_2&utm=x",
+                    "destination_path": "Rock/Directos",
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "valid": True,
+        "default_destination_path": "prueba",
+        "total_items": 2,
+        "items": [
+            {
+                "index": 0,
+                "source_url": "https://www.youtube.com/watch?v=VIDEO_ID_1",
+                "requested_filename": "Tema uno",
+                "destination_path": "prueba",
+                "errors": [],
+            },
+            {
+                "index": 1,
+                "source_url": "https://www.youtube.com/watch?v=VIDEO_ID_2",
+                "requested_filename": None,
+                "destination_path": "Rock/Directos",
+                "errors": [],
+            },
+        ],
+        "errors": [],
+    }
+    assert fake_repository.jobs == []
+    assert fake_repository.batches == []
+
+
+@pytest.mark.anyio
+async def test_create_download_batch_creates_batch_jobs_and_events(
+    client: httpx.AsyncClient,
+    fake_repository: FakeDownloadJobRepository,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    library_root = tmp_path / "library"
+    (library_root / "prueba").mkdir(parents=True)
+    (library_root / "Rock" / "Directos").mkdir(parents=True)
+    configure_profiles(monkeypatch, tmp_path, [profile_config(library_root)])
+
+    response = await client.post(
+        "/api/v1/profiles/pepe/download-batches",
+        json={
+            "default_destination_path": "prueba",
+            "items": [
+                {"url": "https://youtu.be/VIDEO_ID_1"},
+                {
+                    "url": "https://youtu.be/VIDEO_ID_2",
+                    "destination_path": "Rock/Directos",
+                    "requested_filename": "Tema dos",
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["batch"]["total_items"] == 2
+    assert body["batch"]["queued_count"] == 2
+    assert body["batch"]["status"] == "queued"
+    assert len(body["jobs"]) == 2
+    assert len(fake_repository.batches) == 1
+    assert len(fake_repository.jobs) == 2
+    assert len(fake_repository.events) == 2
+    assert {job.batch_id for job in fake_repository.jobs} == {
+        fake_repository.batches[0].id
+    }
+    assert fake_repository.jobs[0].destination_relative_path == "prueba"
+    assert fake_repository.jobs[1].destination_relative_path == "Rock/Directos"
+    assert fake_repository.jobs[1].requested_filename == "Tema dos"
+
+
+@pytest.mark.anyio
+async def test_download_batch_rejects_duplicate_urls_after_canonicalization(
+    client: httpx.AsyncClient,
+    fake_repository: FakeDownloadJobRepository,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    library_root = tmp_path / "library"
+    (library_root / "prueba").mkdir(parents=True)
+    configure_profiles(monkeypatch, tmp_path, [profile_config(library_root)])
+
+    response = await client.post(
+        "/api/v1/profiles/pepe/download-batches/preview",
+        json={
+            "default_destination_path": "prueba",
+            "items": [
+                {"url": "https://youtu.be/VIDEO_ID"},
+                {"url": "https://www.youtube.com/watch?v=VIDEO_ID&feature=share"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["valid"] is False
+    assert response.json()["items"][1]["errors"] == ["URL duplicada con el elemento 1."]
+    assert fake_repository.jobs == []
+
+
+@pytest.mark.anyio
+async def test_download_batch_is_atomic_when_one_item_is_invalid(
+    client: httpx.AsyncClient,
+    fake_repository: FakeDownloadJobRepository,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    library_root = tmp_path / "library"
+    (library_root / "prueba").mkdir(parents=True)
+    configure_profiles(monkeypatch, tmp_path, [profile_config(library_root)])
+
+    response = await client.post(
+        "/api/v1/profiles/pepe/download-batches",
+        json={
+            "default_destination_path": "prueba",
+            "items": [
+                {"url": "https://youtu.be/VIDEO_ID_1"},
+                {"url": "https://example.com/nope"},
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert fake_repository.jobs == []
+    assert fake_repository.batches == []
+    assert fake_repository.events == []
+
+
+@pytest.mark.anyio
+async def test_download_batch_rejects_101_items(
+    client: httpx.AsyncClient,
+    fake_repository: FakeDownloadJobRepository,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    library_root = tmp_path / "library"
+    (library_root / "prueba").mkdir(parents=True)
+    configure_profiles(monkeypatch, tmp_path, [profile_config(library_root)])
+
+    response = await client.post(
+        "/api/v1/profiles/pepe/download-batches/preview",
+        json={
+            "default_destination_path": "prueba",
+            "items": [
+                {"url": f"https://youtu.be/VIDEO_{index}"} for index in range(101)
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert fake_repository.jobs == []
+
+
+@pytest.mark.anyio
+async def test_downloads_can_filter_by_batch_id(
+    client: httpx.AsyncClient,
+    fake_repository: FakeDownloadJobRepository,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    library_root = tmp_path / "library"
+    (library_root / "prueba").mkdir(parents=True)
+    configure_profiles(monkeypatch, tmp_path, [profile_config(library_root)])
+    create_response = await client.post(
+        "/api/v1/profiles/pepe/download-batches",
+        json={
+            "default_destination_path": "prueba",
+            "items": [{"url": "https://youtu.be/VIDEO_ID_1"}],
+        },
+    )
+    batch_id = create_response.json()["batch"]["id"]
+
+    response = await client.get("/api/v1/downloads", params={"batch_id": batch_id})
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert response.json()["items"][0]["batch_id"] == batch_id
 
 
 @pytest.mark.anyio

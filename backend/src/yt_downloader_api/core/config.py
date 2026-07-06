@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     database_pool_recycle_seconds: int = 1800
     worker_id: str | None = None
     worker_stale_job_timeout_seconds: int = 900
+    worker_concurrency: int = 2
+    worker_queue_poll_interval_seconds: int = 3
     download_staging_root: str = "/var/lib/yt-downloader/staging"
     download_progress_update_interval_seconds: int = 5
     download_progress_minimum_percent_delta: int = 1
@@ -27,6 +29,22 @@ class Settings(BaseSettings):
     def validate_download_staging_root(cls, value: str) -> str:
         if not Path(value).is_absolute():
             raise ValueError("download_staging_root must be absolute")
+        return value
+
+    @field_validator("worker_concurrency")
+    @classmethod
+    def validate_worker_concurrency(cls, value: int) -> int:
+        if value < 1 or value > 4:
+            raise ValueError("worker_concurrency must be between 1 and 4")
+        return value
+
+    @field_validator("worker_queue_poll_interval_seconds")
+    @classmethod
+    def validate_worker_queue_poll_interval_seconds(cls, value: int) -> int:
+        if value < 1 or value > 60:
+            raise ValueError(
+                "worker_queue_poll_interval_seconds must be between 1 and 60"
+            )
         return value
 
     model_config = SettingsConfigDict(
