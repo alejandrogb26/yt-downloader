@@ -76,6 +76,8 @@ sudo install -m 0640 -o root -g yt-downloader infra/config/library-exclusions.js
 
 Verifica la ruta de `uv` antes de instalar dependencias. Verifica también que Python del entorno virtual sea 3.14.
 
+El paquete Python se bloquea con `yt-dlp[default]`, que incluye dependencias recomendadas como `yt-dlp-ejs`. Para YouTube, el CT debe proporcionar además un runtime JavaScript externo compatible. Instala Deno de forma global, por ejemplo en `/usr/local/bin/deno`, y asegúrate de que el usuario de servicio `yt-downloader` puede ejecutarlo. No lo instales en el home de `root` ni dependas de rutas privadas de usuario.
+
 Instalar dependencias bloqueadas:
 
 ```bash
@@ -93,6 +95,17 @@ sudo -u yt-downloader /usr/local/bin/uv run --frozen --no-sync --project backend
 ```
 
 Los servicios systemd no usan `uv run` en ejecución normal. Usan directamente los binarios ya instalados en `/opt/yt-downloader/backend/.venv`.
+
+`yt-dlp` detecta Deno automáticamente si `deno` está disponible en el `PATH` del proceso systemd. No hay una variable de entorno de la aplicación para fijar la ruta del runtime JavaScript y no debe hardcodearse una ruta específica del CT en el repositorio.
+
+Después de instalar Deno en el CT, verifica como usuario de servicio:
+
+```bash
+runuser -u yt-downloader -- deno --version
+runuser -u yt-downloader -- /opt/yt-downloader/backend/.venv/bin/python -m yt_dlp --verbose --simulate 'https://www.youtube.com/watch?v=VIDEO_ID'
+```
+
+La salida verbose de `yt-dlp` debe mostrar que encuentra un runtime JavaScript compatible y no debe mostrar `No supported JavaScript runtime could be found`.
 
 ## Frontend
 
@@ -232,4 +245,4 @@ findmnt -T /mnt/music/pepe
 
 ## Notas Operativas
 
-`yt-dlp-ejs` y un runtime JavaScript compatible pueden ser necesarios para algunos vídeos de YouTube. No forman parte de esta instalación inicial.
+`yt-dlp-ejs` forma parte de las dependencias Python bloqueadas mediante `yt-dlp[default]`. Deno sigue siendo una dependencia del sistema y debe instalarse fuera del entorno virtual, en una ruta global accesible por `yt-downloader`.

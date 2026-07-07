@@ -178,6 +178,8 @@ Comportamiento previsto:
 
 La compatibilidad de formatos de fallback con Audio Station se comprobará más adelante. No hay conversión de compatibilidad en esta fase y `transcode_applied` permanece en `false`.
 
+El backend depende de `yt-dlp[default]`, que incluye componentes recomendados como `yt-dlp-ejs`. Para las firmas y requisitos actuales de YouTube, el entorno de ejecución debe proporcionar un runtime JavaScript externo compatible. En despliegue se usa Deno como dependencia del sistema, instalado en una ruta global como `/usr/local/bin/deno` y disponible en el `PATH` del worker systemd. La aplicación no fija una ruta de Deno ni modifica opciones de `YoutubeDL`: yt-dlp detecta el runtime automáticamente desde el entorno del proceso.
+
 ## Estado actual
 
 La parte funcional actual incluye el backend en `backend`, ejecutable con Uvicorn en `127.0.0.1:8080`, el frontend React/Vite en `frontend`, ejecutable en desarrollo con `npm run dev`, y plantillas de despliegue sin Docker en `infra/`.

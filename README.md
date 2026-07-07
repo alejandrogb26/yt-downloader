@@ -73,7 +73,9 @@ Hay un ejemplo versionable en `config/profiles.example.json`. El fichero real `c
 - Node.js compatible con Vite
 - `npm`
 
-`yt-dlp` se instala mediante las dependencias Python del proyecto. Para máxima compatibilidad con YouTube, el administrador puede necesitar `yt-dlp-ejs` y un runtime JavaScript compatible. `ffmpeg` y `ffprobe` no son necesarios para esta descarga directa sin conversión, aunque pueden ser necesarios en funciones futuras de postprocesado o compatibilidad.
+`yt-dlp` se instala mediante las dependencias Python del proyecto con el extra `yt-dlp[default]`, que incluye componentes recomendados como `yt-dlp-ejs`. Para la compatibilidad actual de YouTube, el host o CT debe proporcionar un runtime JavaScript externo compatible. En producción se recomienda Deno instalado en una ruta global como `/usr/local/bin/deno`, accesible para el usuario de servicio `yt-downloader`; no lo instales en el home de `root` ni en una ruta privada de usuario. `ffmpeg` y `ffprobe` no son necesarios para esta descarga directa sin conversión, aunque pueden ser necesarios en funciones futuras de postprocesado o compatibilidad.
+
+`yt-dlp` detecta Deno automáticamente si está disponible en el `PATH` del proceso systemd. La aplicación no configura una ruta específica de runtime JavaScript porque la unidad del worker usa el entorno estándar del sistema y no debe hardcodear rutas del CT.
 
 ## Comandos de desarrollo
 
@@ -157,6 +159,15 @@ curl http://127.0.0.1:8080/api/v1/health/ready
 ```
 
 `/api/v1/health` es un liveness barato: no depende de MariaDB ni de NFS. `/api/v1/health/ready` comprueba conectividad ligera con MariaDB y validación de configuración de perfiles y exclusiones; no recorre NFS, no ejecuta migraciones y no contacta YouTube.
+
+Comprobar el runtime JavaScript usado por `yt-dlp` después de instalar Deno en el CT:
+
+```bash
+runuser -u yt-downloader -- deno --version
+runuser -u yt-downloader -- /opt/yt-downloader/backend/.venv/bin/python -m yt_dlp --verbose --simulate 'https://www.youtube.com/watch?v=VIDEO_ID'
+```
+
+La salida verbose de `yt-dlp` debe dejar de mostrar `No supported JavaScript runtime could be found` y debe indicar que detecta un runtime JavaScript compatible.
 
 Comprobar perfiles:
 
