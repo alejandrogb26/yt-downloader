@@ -122,7 +122,9 @@ El usuario `caddy` debe poder leer `/var/www/yt-downloader`.
 
 Plantilla: `infra/caddy/Caddyfile.internal.example`.
 
-La configuración escucha en HTTP interno `IP_CT:8081`, enlazada solo a `IP_CT`. Sirve `/var/www/yt-downloader`, soporta rutas SPA con fallback a `/index.html`, y reenvía solo `/api/*` a `127.0.0.1:8080` sin reescribir la ruta. No incluye reglas especiales para `/docs` ni `/openapi.json`.
+La configuración escucha en HTTP interno `IP_CT:8081`, enlazada solo a `IP_CT`. Sirve `/var/www/yt-downloader`, soporta rutas SPA con fallback a `/index.html`, y reenvía `/api/*` a `127.0.0.1:8080` sin reescribir la ruta.
+
+También publica la documentación automática de FastAPI a través del mismo proxy normal de la aplicación, sin abrir puertos nuevos ni cambiar FastAPI: Swagger UI en `/docs`, ReDoc en `/redoc` y el esquema OpenAPI en `/openapi.json`. Estas rutas se envían a `127.0.0.1:8080` antes del fallback estático del frontend y conservan su ruta original.
 
 Sustituye `IP_CT` por la IP real del CT y `IP_NGINX` por la IP real del Nginx central. Caddy debe confiar únicamente en `IP_NGINX/32` como proxy. El firewall del CT debe permitir TCP `8081` exclusivamente desde `IP_NGINX`.
 

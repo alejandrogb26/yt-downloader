@@ -117,7 +117,9 @@ Levantar el frontend React/Vite en desarrollo:
 npm run dev --prefix frontend
 ```
 
-En desarrollo, Vite reenvía `/api` a `http://127.0.0.1:8080`, evitando CORS sin modificar FastAPI. En producción se espera publicar el build estático del frontend y la API bajo el mismo origen mediante Caddy; las plantillas de despliegue están en `infra/`.
+En desarrollo, Vite reenvía `/api` a `http://127.0.0.1:8080`, evitando CORS sin modificar FastAPI. En producción se espera publicar el build estático del frontend, la API y la documentación automática de FastAPI bajo el mismo origen mediante Caddy; las plantillas de despliegue están en `infra/`.
+
+En producción, Swagger UI se consulta en `/docs`, ReDoc en `/redoc` y OpenAPI JSON en `/openapi.json`. Estas rutas pasan por el proxy normal de la aplicación; no se abre ningún puerto nuevo y FastAPI sigue escuchando solo en `127.0.0.1:8080`.
 
 Ejecutar verificaciones frontend:
 

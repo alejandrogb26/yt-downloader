@@ -34,14 +34,17 @@ Nginx central
   ↓ HTTP interno TCP 8081
 Caddy en CT
   ├── frontend React estático
-  └── /api/* → FastAPI en 127.0.0.1:8080
+  ├── /api/* → FastAPI en 127.0.0.1:8080
+  └── /docs, /redoc, /openapi.json → FastAPI en 127.0.0.1:8080
                     ↓
                  MariaDB externa
                     ↑
 worker systemd persistente → staging local → NFS por perfil
 ```
 
-FastAPI no queda accesible desde la red: escucha en `127.0.0.1:8080`. El DNS interno `music.alejandrogb.local` debe resolver al Nginx central. Nginx es el único componente que escucha en `443` para ese nombre, termina HTTPS y reenvía HTTP interno a `IP_CT:8081`. Caddy en el CT no usa certificados, escucha solo en la IP real del CT y sirve el build estático; reenvía únicamente `/api/*` conservando el prefijo `/api`.
+FastAPI no queda accesible desde la red: escucha en `127.0.0.1:8080`. El DNS interno `music.alejandrogb.local` debe resolver al Nginx central. Nginx es el único componente que escucha en `443` para ese nombre, termina HTTPS y reenvía HTTP interno a `IP_CT:8081`. Caddy en el CT no usa certificados, escucha solo en la IP real del CT y sirve el build estático; reenvía `/api/*` conservando el prefijo `/api`.
+
+Caddy también publica las rutas de documentación automáticas de FastAPI bajo el hostname principal: Swagger UI en `/docs`, ReDoc en `/redoc` y OpenAPI JSON en `/openapi.json`. Estas rutas pasan por el mismo proxy normal de la aplicación hacia `127.0.0.1:8080`, antes del fallback SPA, sin abrir puertos nuevos y sin reescribir prefijos.
 
 El firewall del CT debe permitir TCP `8081` exclusivamente desde el Nginx central. Caddy debe confiar solo en la IP del Nginx central como proxy. Los certificados y claves pertenecen al Nginx central y no deben versionarse ni copiarse al repositorio.
 

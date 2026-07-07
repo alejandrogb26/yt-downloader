@@ -18,6 +18,11 @@ http://music.alejandrogb.local:8081 {
             reverse_proxy 127.0.0.1:8080
         }
 
+        @fastapi_docs path /docs /docs/* /redoc /redoc/* /openapi.json
+        handle @fastapi_docs {
+            reverse_proxy 127.0.0.1:8080
+        }
+
         handle {
             try_files {path} /index.html
             file_server
