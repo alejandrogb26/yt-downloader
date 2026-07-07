@@ -96,7 +96,7 @@ sudo -u yt-downloader /usr/local/bin/uv run --frozen --no-sync --project backend
 
 Los servicios systemd no usan `uv run` en ejecución normal. Usan directamente los binarios ya instalados en `/opt/yt-downloader/backend/.venv`.
 
-`yt-dlp` detecta Deno automáticamente si `deno` está disponible en el `PATH` del proceso systemd. No hay una variable de entorno de la aplicación para fijar la ruta del runtime JavaScript y no debe hardcodearse una ruta específica del CT en el repositorio.
+`yt-dlp` detecta Deno automáticamente si `deno` está disponible en el `PATH` del proceso systemd. La unidad del worker fija un `PATH` explícito que incluye rutas globales como `/usr/local/bin`, por lo que Deno debe instalarse en una ruta global incluida ahí, por ejemplo `/usr/local/bin/deno`. No hay una variable de entorno de la aplicación para fijar la ruta del runtime JavaScript y no debe hardcodearse una ruta específica del CT en el repositorio.
 
 Después de instalar Deno en el CT, verifica como usuario de servicio:
 

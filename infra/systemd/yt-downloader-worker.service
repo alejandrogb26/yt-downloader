@@ -10,6 +10,7 @@ User=yt-downloader
 Group=yt-downloader
 WorkingDirectory=/opt/yt-downloader/backend
 EnvironmentFile=/etc/yt-downloader/yt-downloader.env
+Environment="PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/yt-downloader/backend/.venv/bin/python -m yt_downloader_api.worker.main
 Restart=on-failure
