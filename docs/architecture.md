@@ -142,12 +142,14 @@ Flujo actual del worker persistente:
 Worker -> MariaDB -> marca running obsoletos como failed
 Worker -> MariaDB -> reclama queued hasta WORKER_CONCURRENCY -> running
 Worker -> heartbeat autónomo por trabajo activo
-Worker -> staging local -> descarga audio con yt-dlp
+Worker -> staging local -> descarga audio con yt-dlp y reintentos controlados
 Worker -> NFS -> publica fichero final sin sobrescribir
 Worker -> MariaDB -> completed / failed
 ```
 
-El worker persistente reclama trabajos de la cola y ejecuta hasta `WORKER_CONCURRENCY` descargas en paralelo. Cada trabajo usa instancia de `yt-dlp`, staging `DOWNLOAD_STAGING_ROOT/<job_id>/` y sesiones SQLAlchemy aisladas. `WORKER_QUEUE_POLL_INTERVAL_SECONDS` controla el sondeo cuando no hay trabajo o capacidad. `WORKER_HEARTBEAT_INTERVAL_SECONDS` controla un heartbeat autónomo por trabajo activo y debe ser menor que `WORKER_STALE_JOB_TIMEOUT_SECONDS`. El heartbeat no depende de eventos ni de hooks de progreso, por lo que sigue activo durante pausas de descarga, copia a NFS y resolución de colisiones. Si un worker cae, los trabajos obsoletos se recuperan por timeout. El fichero no aparece en la biblioteca hasta que la descarga ha terminado y la copia al destino se ha completado. El temporal de publicación dentro de NFS es oculto y no aparece en el listado normal.
+El worker persistente reclama trabajos de la cola y ejecuta hasta `WORKER_CONCURRENCY` descargas en paralelo. Cada trabajo usa instancia de `yt-dlp`, staging `DOWNLOAD_STAGING_ROOT/<job_id>/` y sesiones SQLAlchemy aisladas. `WORKER_QUEUE_POLL_INTERVAL_SECONDS` controla el sondeo cuando no hay trabajo o capacidad. `WORKER_HEARTBEAT_INTERVAL_SECONDS` controla un heartbeat autónomo por trabajo activo y debe ser menor que `WORKER_STALE_JOB_TIMEOUT_SECONDS`. El heartbeat no depende de eventos ni de hooks de progreso, por lo que sigue activo durante pausas de descarga, backoff de reintento, copia a NFS y resolución de colisiones. Si un worker cae, los trabajos obsoletos se recuperan por timeout. El fichero no aparece en la biblioteca hasta que la descarga ha terminado y la copia al destino se ha completado. El temporal de publicación dentro de NFS es oculto y no aparece en el listado normal.
+
+La fase de descarga/resolución de yt-dlp se reintenta dentro del mismo trabajo cuando el adaptador de descarga devuelve un error. `YT_DLP_MAX_ATTEMPTS` vale `3` por defecto e incluye el intento inicial; `YT_DLP_RETRY_INITIAL_DELAY_SECONDS` vale `2` y se duplica en cada reintento, por lo que los retrasos por defecto son 2 y 4 segundos. Antes de reintentar se limpia el staging parcial del intento fallido y el siguiente intento crea una nueva instancia de `YoutubeDL`. No se reintentan errores de validación local, perfiles, rutas, staging, publicación NFS, MariaDB ni errores internos ajenos a yt-dlp. La publicación NFS se ejecuta solo una vez, después de una descarga exitosa. Si algunos vídeos de un lote agotan sus intentos, esos trabajos quedan `failed` y el lote puede calcularse como `completed_with_errors`.
 
 Ante SIGTERM, el worker deja de reclamar trabajos nuevos, pero espera a que los trabajos activos terminen. Durante esa espera ordenada los heartbeats autónomos continúan para evitar que otro ciclo de recuperación marque esos trabajos como obsoletos.
 

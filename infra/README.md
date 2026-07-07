@@ -98,6 +98,8 @@ Los servicios systemd no usan `uv run` en ejecución normal. Usan directamente l
 
 `yt-dlp` detecta Deno automáticamente si `deno` está disponible en el `PATH` del proceso systemd. La unidad del worker fija un `PATH` explícito que incluye rutas globales como `/usr/local/bin`, por lo que Deno debe instalarse en una ruta global incluida ahí, por ejemplo `/usr/local/bin/deno`. No hay una variable de entorno de la aplicación para fijar la ruta del runtime JavaScript y no debe hardcodearse una ruta específica del CT en el repositorio.
 
+La fase de resolución/descarga con yt-dlp usa reintentos internos controlados por `YT_DLP_MAX_ATTEMPTS=3` y `YT_DLP_RETRY_INITIAL_DELAY_SECONDS=2`. El máximo incluye el intento inicial; con esos valores espera 2 segundos antes del segundo intento y 4 antes del tercero. Solo cubre errores reportados por el adaptador de yt-dlp; no reintenta validaciones locales, staging, publicación NFS, MariaDB ni errores internos ajenos a yt-dlp. Si algunos trabajos de un lote agotan sus intentos, el lote puede quedar como `completed_with_errors`.
+
 Después de instalar Deno en el CT, verifica como usuario de servicio:
 
 ```bash
@@ -203,6 +205,8 @@ sudo systemctl enable --now yt-downloader-worker.service
 ```
 
 El worker es un servicio persistente y concurrente. Reclama trabajos hasta `WORKER_CONCURRENCY` y sondea la cola cada `WORKER_QUEUE_POLL_INTERVAL_SECONDS` cuando no hay capacidad o trabajo pendiente. Cada trabajo activo mantiene `heartbeat_at` cada `WORKER_HEARTBEAT_INTERVAL_SECONDS`; ese valor debe ser positivo y menor que `WORKER_STALE_JOB_TIMEOUT_SECONDS`, que se usa para recuperar trabajos `running` abandonados.
+
+Un trabajo esperando el backoff de yt-dlp sigue contando como activo, ocupa su slot de concurrencia y mantiene heartbeat. Si systemd solicita parada durante esa espera, el worker no inicia otro intento de yt-dlp para ese trabajo.
 
 `--once` queda reservado para ejecución manual o diagnóstico: procesa como máximo un trabajo y sale. No es el mecanismo operativo de producción.
 

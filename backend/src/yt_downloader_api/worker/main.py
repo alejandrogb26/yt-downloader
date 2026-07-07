@@ -336,6 +336,7 @@ def execute_claimed_job(settings: Settings, job_id: str, worker_id: str) -> bool
                     YtDlpAudioDownloader(),
                     job,
                     worker_id,
+                    stop_event.wait,
                 )
                 if completed:
                     logger.info("Job completed. job_id=%s", job.id)

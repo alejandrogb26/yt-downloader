@@ -22,6 +22,7 @@ from yt_downloader_api.services.download_execution import (
     calculate_progress_percent,
     execute_download_job,
     publish_download_to_library,
+    retry_delay_seconds,
     validate_staging_root,
 )
 from yt_downloader_api.services.download_queue import CompletedDownloadJob
@@ -143,6 +144,7 @@ class FakeDownloader:
     def __init__(self, result: AudioDownloadResult | None = None) -> None:
         self.result = result
         self.staging_directory: Path | None = None
+        self.call_count = 0
 
     def download_audio(
         self,
@@ -151,6 +153,7 @@ class FakeDownloader:
         staging_directory: Path,
         progress_hook: Any,
     ) -> AudioDownloadResult:
+        self.call_count += 1
         self.staging_directory = staging_directory
         staging_directory.mkdir(parents=True)
         path = (
@@ -176,8 +179,42 @@ class FakeDownloader:
 
 
 class FailingDownloader:
+    def __init__(self) -> None:
+        self.call_count = 0
+
     def download_audio(self, *_args: object, **_kwargs: object) -> AudioDownloadResult:
+        self.call_count += 1
         raise DownloadAdapterError("internal")
+
+
+class SequenceDownloader:
+    def __init__(self, outcomes: list[AudioDownloadResult | Exception]) -> None:
+        self.outcomes = outcomes
+        self.call_count = 0
+        self.staging_directories: list[Path] = []
+
+    def download_audio(
+        self,
+        _source_url: str,
+        job_id: str,
+        staging_directory: Path,
+        progress_hook: Any,
+    ) -> AudioDownloadResult:
+        self.call_count += 1
+        self.staging_directories.append(staging_directory)
+        staging_directory.mkdir(parents=True, exist_ok=True)
+        partial = staging_directory / f"{job_id}.part"
+        partial.write_bytes(b"partial")
+        outcome = self.outcomes[self.call_count - 1]
+        if isinstance(outcome, Exception):
+            raise outcome
+        path = outcome.downloaded_file_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"audio")
+        progress_hook(
+            {"status": "finished", "downloaded_bytes": 100, "total_bytes": 100}
+        )
+        return outcome
 
 
 def make_job(
@@ -240,6 +277,21 @@ def make_settings(tmp_path: Path, root: Path) -> Settings:
         database_url="mysql+pymysql://user:pass@host:3306/db",
         profiles_config_path=str(config_path),
         download_staging_root=str(tmp_path / "staging"),
+    )
+
+
+def make_result(
+    staging: Path, job_id: str, extension: str = "m4a"
+) -> AudioDownloadResult:
+    return AudioDownloadResult(
+        title="Canción Única",
+        video_id="abc123",
+        downloaded_file_path=staging / f"{job_id}.{extension}",
+        source_format_id="140",
+        source_container=extension,
+        source_audio_codec="aac",
+        output_container=extension,
+        output_audio_codec="aac",
     )
 
 
@@ -497,6 +549,201 @@ def test_execute_download_job_completes_with_fallback_webm_opus(tmp_path: Path) 
     assert downloader.staging_directory is not None
     assert downloader.staging_directory.name == job.id
     assert not downloader.staging_directory.exists()
+    assert downloader.call_count == 1
+    assert not any("Reintentando" in event.message for event in repository.events)
+
+
+def test_execute_download_job_publishes_once_after_first_attempt_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "library"
+    (root / "Rock").mkdir(parents=True)
+    settings = make_settings(tmp_path, root)
+    job = make_job(root)
+    repository = InMemoryDownloadQueueRepository(job)
+    downloader = FakeDownloader()
+    publish_calls = 0
+    original_publish = publish_download_to_library
+
+    def counted_publish(*args: Any, **kwargs: Any):
+        nonlocal publish_calls
+        publish_calls += 1
+        return original_publish(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "yt_downloader_api.services.download_execution.publish_download_to_library",
+        counted_publish,
+    )
+
+    assert execute_download_job(settings, repository, downloader, job, "worker-1")
+
+    assert downloader.call_count == 1
+    assert publish_calls == 1
+    assert not any("Reintentando" in event.message for event in repository.events)
+
+
+def test_execute_download_job_retries_two_failures_then_completes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "library"
+    (root / "Rock").mkdir(parents=True)
+    settings = make_settings(tmp_path, root)
+    job = make_job(root)
+    staging = Path(settings.download_staging_root) / job.id
+    result = make_result(staging, job.id)
+    repository = InMemoryDownloadQueueRepository(job)
+    downloader = SequenceDownloader(
+        [
+            DownloadAdapterError("HTTP Error 403"),
+            DownloadAdapterError("Video unavailable"),
+            result,
+        ]
+    )
+    waits: list[int] = []
+    publish_calls = 0
+    original_publish = publish_download_to_library
+
+    def counted_publish(*args: Any, **kwargs: Any):
+        nonlocal publish_calls
+        publish_calls += 1
+        return original_publish(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "yt_downloader_api.services.download_execution.publish_download_to_library",
+        counted_publish,
+    )
+
+    completed = execute_download_job(
+        settings,
+        repository,
+        downloader,
+        job,
+        "worker-1",
+        waits.append,
+    )
+
+    assert completed is True
+    assert downloader.call_count == 3
+    assert waits == [2, 4]
+    assert publish_calls == 1
+    assert job.status == "completed"
+    retry_messages = [
+        event.message for event in repository.events if "Reintentando" in event.message
+    ]
+    assert retry_messages == [
+        "La descarga falló. Reintentando (2 de 3) en 2 segundos.",
+        "La descarga falló. Reintentando (3 de 3) en 4 segundos.",
+    ]
+    assert not staging.exists()
+
+
+def test_execute_download_job_fails_after_configured_retry_attempts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "library"
+    (root / "Rock").mkdir(parents=True)
+    settings = make_settings(tmp_path, root)
+    job = make_job(root)
+    repository = InMemoryDownloadQueueRepository(job)
+    downloader = FailingDownloader()
+    waits: list[int] = []
+
+    def fail_publish(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("publication must not run after failed downloads")
+
+    monkeypatch.setattr(
+        "yt_downloader_api.services.download_execution.publish_download_to_library",
+        fail_publish,
+    )
+
+    completed = execute_download_job(
+        settings,
+        repository,
+        downloader,
+        job,
+        "worker-1",
+        waits.append,
+    )
+
+    assert completed is False
+    assert downloader.call_count == settings.yt_dlp_max_attempts
+    assert waits == [2, 4]
+    assert job.status == "failed"
+    assert job.error_code == "download_failed"
+    assert job.error_message == "No se pudo descargar el audio tras 3 intentos."
+    assert job.status != "running"
+
+
+def test_execute_download_job_does_not_retry_publication_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "library"
+    (root / "Rock").mkdir(parents=True)
+    settings = make_settings(tmp_path, root)
+    job = make_job(root)
+    repository = InMemoryDownloadQueueRepository(job)
+    downloader = FakeDownloader()
+    waits: list[int] = []
+
+    def fail_publish(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("NFS write failed")
+
+    monkeypatch.setattr(
+        "yt_downloader_api.services.download_execution.publish_download_to_library",
+        fail_publish,
+    )
+
+    completed = execute_download_job(
+        settings,
+        repository,
+        downloader,
+        job,
+        "worker-1",
+        waits.append,
+    )
+
+    assert completed is False
+    assert downloader.call_count == 1
+    assert waits == []
+    assert job.status == "failed"
+    assert job.error_code == "destination_write_failed"
+
+
+def test_retry_delay_uses_exponential_backoff_defaults() -> None:
+    settings = Settings()
+
+    assert retry_delay_seconds(settings.yt_dlp_retry_initial_delay_seconds, 1) == 2
+    assert retry_delay_seconds(settings.yt_dlp_retry_initial_delay_seconds, 2) == 4
+
+
+def test_execute_download_job_interrupts_backoff_without_new_attempt(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "library"
+    (root / "Rock").mkdir(parents=True)
+    settings = make_settings(tmp_path, root)
+    job = make_job(root)
+    repository = InMemoryDownloadQueueRepository(job)
+    downloader = FailingDownloader()
+
+    completed = execute_download_job(
+        settings,
+        repository,
+        downloader,
+        job,
+        "worker-1",
+        lambda _delay: True,
+    )
+
+    assert completed is False
+    assert downloader.call_count == 1
+    assert job.status == "failed"
+    assert job.error_code == "worker_interrupted"
+    assert job.error_message == "El worker se detuvo antes de completar la descarga."
 
 
 def test_execute_download_job_completes_with_m4a_aac(tmp_path: Path) -> None:
@@ -542,7 +789,7 @@ def test_execute_download_job_fails_safely_when_downloader_fails(
 
     assert job.status == "failed"
     assert job.error_code == "download_failed"
-    assert job.error_message == "Audio download failed."
+    assert job.error_message == "No se pudo descargar el audio tras 3 intentos."
 
 
 def test_execute_download_job_fails_when_profile_disabled(tmp_path: Path) -> None:
@@ -616,3 +863,14 @@ def test_rejects_staging_root_inside_profile_library(tmp_path: Path) -> None:
 def test_settings_reject_relative_staging_root() -> None:
     with pytest.raises(ValueError):
         Settings(download_staging_root="relative/staging")
+
+
+def test_settings_validate_yt_dlp_retry_limits() -> None:
+    with pytest.raises(ValueError, match="yt_dlp_max_attempts"):
+        Settings(yt_dlp_max_attempts=0)
+    with pytest.raises(ValueError, match="yt_dlp_max_attempts"):
+        Settings(yt_dlp_max_attempts=6)
+    with pytest.raises(ValueError, match="yt_dlp_retry_initial_delay_seconds"):
+        Settings(yt_dlp_retry_initial_delay_seconds=0)
+    with pytest.raises(ValueError, match="yt_dlp_retry_initial_delay_seconds"):
+        Settings(yt_dlp_retry_initial_delay_seconds=301)

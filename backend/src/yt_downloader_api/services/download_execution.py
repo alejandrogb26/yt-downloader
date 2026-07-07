@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import shutil
@@ -6,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from time import sleep
 from typing import Any, Protocol
 
 from yt_downloader_api.core.config import Settings
@@ -35,12 +37,21 @@ from yt_downloader_api.services.profiles import (
 )
 
 DOWNLOAD_FAILED_MESSAGE = "Audio download failed."
+DOWNLOAD_RETRIES_EXHAUSTED_MESSAGE = (
+    "No se pudo descargar el audio tras {attempts} intentos."
+)
+DOWNLOAD_INTERRUPTED_MESSAGE = "El worker se detuvo antes de completar la descarga."
 DESTINATION_FAILED_MESSAGE = "Download destination is unavailable."
 DESTINATION_WRITE_FAILED_MESSAGE = "Downloaded file could not be saved."
+LOGGER = logging.getLogger("yt_downloader_api.worker.download_execution")
 
 
 class DownloadExecutionError(Exception):
     """Raised when a download job cannot be completed safely."""
+
+
+class DownloadRetryInterrupted(Exception):
+    """Raised when worker shutdown interrupts retry backoff."""
 
 
 class DownloadJobData(Protocol):
@@ -115,8 +126,10 @@ def execute_download_job(
     downloader: AudioDownloader,
     job: DownloadJobData,
     worker_id: str,
+    backoff_wait: Callable[[int], bool] | None = None,
 ) -> bool:
     staging_directory = Path(settings.download_staging_root) / job.id
+    wait_for_retry = backoff_wait or default_backoff_wait
     try:
         validate_staging_root(settings)
         progress_reporter = ProgressReporter(
@@ -126,11 +139,15 @@ def execute_download_job(
             settings.download_progress_update_interval_seconds,
             settings.download_progress_minimum_percent_delta,
         )
-        result = downloader.download_audio(
-            job.source_url,
-            job.id,
+        result = download_audio_with_retries(
+            settings,
+            repository,
+            downloader,
+            job,
+            worker_id,
             staging_directory,
             progress_reporter,
+            wait_for_retry,
         )
         add_running_job_event(
             repository,
@@ -151,13 +168,25 @@ def execute_download_job(
             output_audio_codec=result.output_audio_codec,
         )
         return mark_running_job_as_completed(repository, job.id, worker_id, completed)
+    except DownloadRetryInterrupted:
+        mark_running_job_as_failed(
+            repository,
+            job.id,
+            worker_id,
+            "worker_interrupted",
+            DOWNLOAD_INTERRUPTED_MESSAGE,
+        )
+        return False
     except DownloadAdapterError:
+        message = DOWNLOAD_RETRIES_EXHAUSTED_MESSAGE.format(
+            attempts=settings.yt_dlp_max_attempts
+        )
         mark_running_job_as_failed(
             repository,
             job.id,
             worker_id,
             "download_failed",
-            DOWNLOAD_FAILED_MESSAGE,
+            message,
         )
         return False
     except (
@@ -188,6 +217,68 @@ def execute_download_job(
         return False
     finally:
         cleanup_staging_directory(staging_directory)
+
+
+def download_audio_with_retries(
+    settings: Settings,
+    repository: DownloadQueue,
+    downloader: AudioDownloader,
+    job: DownloadJobData,
+    worker_id: str,
+    staging_directory: Path,
+    progress_reporter: ProgressReporter,
+    backoff_wait: Callable[[int], bool],
+) -> AudioDownloadResult:
+    max_attempts = settings.yt_dlp_max_attempts
+    for attempt_number in range(1, max_attempts + 1):
+        try:
+            return downloader.download_audio(
+                job.source_url,
+                job.id,
+                staging_directory,
+                progress_reporter,
+            )
+        except DownloadAdapterError:
+            LOGGER.exception(
+                "yt-dlp download attempt failed. "
+                "phase=yt_dlp_download job_id=%s batch_id=%s "
+                "attempt=%s max_attempts=%s",
+                job.id,
+                getattr(job, "batch_id", None),
+                attempt_number,
+                max_attempts,
+            )
+            cleanup_staging_directory(staging_directory)
+            if attempt_number >= max_attempts:
+                raise
+            delay_seconds = retry_delay_seconds(
+                settings.yt_dlp_retry_initial_delay_seconds,
+                attempt_number,
+            )
+            retry_attempt_number = attempt_number + 1
+            event_recorded = add_running_job_event(
+                repository,
+                job.id,
+                worker_id,
+                "warning",
+                "La descarga falló. "
+                f"Reintentando ({retry_attempt_number} de {max_attempts}) "
+                f"en {delay_seconds} segundos.",
+            )
+            if not event_recorded:
+                raise
+            if backoff_wait(delay_seconds):
+                raise DownloadRetryInterrupted from None
+    raise DownloadAdapterError("Audio download failed.")
+
+
+def retry_delay_seconds(initial_delay_seconds: int, completed_attempts: int) -> int:
+    return initial_delay_seconds * (2 ** (completed_attempts - 1))
+
+
+def default_backoff_wait(delay_seconds: int) -> bool:
+    sleep(delay_seconds)
+    return False
 
 
 class StagingConfigurationError(Exception):

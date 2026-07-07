@@ -756,6 +756,7 @@ def test_persistent_worker_respects_concurrency_and_continues_after_failure(
         _downloader: object,
         job: DownloadJob,
         _worker_id: str,
+        _backoff_wait: object,
     ) -> bool:
         nonlocal active_count, completed_count, max_active_count
         with lock:
@@ -1135,8 +1136,11 @@ def test_execute_claimed_job_heartbeats_during_long_execution(
         _downloader: object,
         job: DownloadJob,
         worker_id: str,
+        backoff_wait: object,
     ) -> bool:
+        assert callable(backoff_wait)
         assert repository.heartbeat_event.wait(timeout=2)
+        assert backoff_wait(1) is False
         return mark_running_job_as_completed(
             _repository,
             job.id,

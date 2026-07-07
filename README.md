@@ -10,7 +10,7 @@
 - MariaDB: base de datos relacional para trabajos de descarga, eventos e historial.
 - Almacenamiento NFS: destino compartido para los archivos descargados.
 
-Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la búsqueda global por perfil, exclusiones de biblioteca, operaciones seguras sobre entradas, la base ORM/Alembic, trabajos individuales, descargas por lote, consulta de trabajos/eventos, un worker persistente concurrente, un frontend React separado y plantillas de despliegue sin Docker en `infra/`. El frontend permite crear trabajos, crear lotes, listar la biblioteca, seleccionar destino, crear carpetas, renombrar entradas, mover entradas dentro del perfil y enviar entradas a papelera. No se incluye autenticación, cancelación ni reintentos automáticos.
+Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la búsqueda global por perfil, exclusiones de biblioteca, operaciones seguras sobre entradas, la base ORM/Alembic, trabajos individuales, descargas por lote, consulta de trabajos/eventos, un worker persistente concurrente con reintentos controlados para fallos de yt-dlp, un frontend React separado y plantillas de despliegue sin Docker en `infra/`. El frontend permite crear trabajos, crear lotes, listar la biblioteca, seleccionar destino, crear carpetas, renombrar entradas, mover entradas dentro del perfil y enviar entradas a papelera. No se incluye autenticación ni cancelación.
 
 Topología de despliegue prevista en LAN con CT LXC:
 
@@ -61,6 +61,8 @@ La política inicial de descarga es solo audio, sin recodificación por defecto.
 MariaDB almacena la política solicitada y el formato técnico realmente obtenido: contenedor, códec, formato fuente y si se aplicó transcodificación. En esta versión `transcode_applied` permanece siempre en `false`.
 
 El worker descarga primero en staging local (`DOWNLOAD_STAGING_ROOT`, por defecto `/var/lib/yt-downloader/staging`) bajo un directorio único por trabajo. Solo cuando la descarga termina correctamente copia el fichero a un temporal oculto dentro del destino NFS del perfil y lo publica sin sobrescribir archivos existentes. El staging no debe estar dentro de ninguna biblioteca de perfil ni bajo `/mnt/music`.
+
+La fase de resolución/descarga con yt-dlp se reintenta dentro del mismo trabajo cuando el adaptador devuelve un fallo de descarga. `YT_DLP_MAX_ATTEMPTS` vale `3` por defecto e incluye el intento inicial; `YT_DLP_RETRY_INITIAL_DELAY_SECONDS` vale `2` por defecto y aplica backoff exponencial simple: 2 segundos antes del segundo intento y 4 antes del tercero. No se reintentan validaciones locales, perfiles, rutas, staging, publicación NFS, MariaDB ni errores internos ajenos a yt-dlp.
 
 El esquema se aplica con Alembic. La API no crea tablas al arrancar y `GET /api/v1/health` funciona aunque `DATABASE_URL` no esté configurada. `GET /api/v1/health/ready` comprueba de forma ligera MariaDB y la configuración de perfiles/exclusiones para saber si la aplicación está lista para operar.
 
@@ -141,9 +143,11 @@ uv run --project backend python -m yt_downloader_api.worker.main --once
 
 `--once` existe para diagnóstico o ejecución manual: recupera stale jobs, procesa como máximo un trabajo y sale. No es el mecanismo operativo de producción.
 
-El worker persistente requiere `DATABASE_URL`, `PROFILES_CONFIG_PATH` y acceso de escritura a `DOWNLOAD_STAGING_ROOT` y a la biblioteca destino. No aplica migraciones automáticamente. Para fijar un identificador estable se puede configurar `WORKER_ID`; si falta, se genera uno a partir del hostname. En producción la concurrencia global del proceso se configura con `WORKER_CONCURRENCY`, el sondeo con `WORKER_QUEUE_POLL_INTERVAL_SECONDS`, el heartbeat autónomo con `WORKER_HEARTBEAT_INTERVAL_SECONDS` y la recuperación de trabajos obsoletos con `WORKER_STALE_JOB_TIMEOUT_SECONDS`. El intervalo de heartbeat debe ser positivo y menor que el timeout stale.
+El worker persistente requiere `DATABASE_URL`, `PROFILES_CONFIG_PATH` y acceso de escritura a `DOWNLOAD_STAGING_ROOT` y a la biblioteca destino. No aplica migraciones automáticamente. Para fijar un identificador estable se puede configurar `WORKER_ID`; si falta, se genera uno a partir del hostname. En producción la concurrencia global del proceso se configura con `WORKER_CONCURRENCY`, el sondeo con `WORKER_QUEUE_POLL_INTERVAL_SECONDS`, el heartbeat autónomo con `WORKER_HEARTBEAT_INTERVAL_SECONDS`, la recuperación de trabajos obsoletos con `WORKER_STALE_JOB_TIMEOUT_SECONDS` y los reintentos internos de yt-dlp con `YT_DLP_MAX_ATTEMPTS` y `YT_DLP_RETRY_INITIAL_DELAY_SECONDS`. El intervalo de heartbeat debe ser positivo y menor que el timeout stale.
 
 Ante SIGTERM, systemd solicita parada ordenada: el worker deja de reclamar trabajos nuevos y espera a que terminen los trabajos activos. Mientras espera, cada trabajo activo mantiene su heartbeat autónomo. `TimeoutStopSec` en la unidad limita cuánto puede durar esa espera antes de que systemd fuerce la terminación.
+
+Durante un backoff de reintento el trabajo sigue activo y ocupa su slot de `WORKER_CONCURRENCY`; el heartbeat autónomo continúa. Si un vídeo de un lote agota sus intentos, ese trabajo queda `failed` y el lote puede terminar como `completed_with_errors` si otros vídeos completan correctamente.
 
 Levantar la API usando el ejemplo de perfiles local, sin modificar `/etc`:
 

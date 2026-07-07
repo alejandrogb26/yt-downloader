@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     download_staging_root: str = "/var/lib/yt-downloader/staging"
     download_progress_update_interval_seconds: int = 5
     download_progress_minimum_percent_delta: int = 1
+    yt_dlp_max_attempts: int = 3
+    yt_dlp_retry_initial_delay_seconds: int = 2
 
     @field_validator("download_staging_root")
     @classmethod
@@ -61,6 +63,22 @@ class Settings(BaseSettings):
     def validate_worker_heartbeat_interval_seconds(cls, value: int) -> int:
         if value < 1:
             raise ValueError("worker_heartbeat_interval_seconds must be positive")
+        return value
+
+    @field_validator("yt_dlp_max_attempts")
+    @classmethod
+    def validate_yt_dlp_max_attempts(cls, value: int) -> int:
+        if value < 1 or value > 5:
+            raise ValueError("yt_dlp_max_attempts must be between 1 and 5")
+        return value
+
+    @field_validator("yt_dlp_retry_initial_delay_seconds")
+    @classmethod
+    def validate_yt_dlp_retry_initial_delay_seconds(cls, value: int) -> int:
+        if value < 1 or value > 300:
+            raise ValueError(
+                "yt_dlp_retry_initial_delay_seconds must be between 1 and 300"
+            )
         return value
 
     @model_validator(mode="after")
