@@ -6,6 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import SQLAlchemyError
 
+from yt_downloader_api.api.dependencies import (
+    AuthContext,
+    get_auth_context,
+    require_csrf_token,
+)
 from yt_downloader_api.core.config import get_settings
 from yt_downloader_api.db.models import (
     DownloadBatch,
@@ -15,6 +20,11 @@ from yt_downloader_api.db.models import (
 )
 from yt_downloader_api.db.session import DatabaseConfigurationError, get_db_session
 from yt_downloader_api.repositories.download_jobs import DownloadJobRepository
+from yt_downloader_api.services.db_profiles import (
+    ProfilePersistenceError,
+    get_authorized_profile,
+    list_authorized_profiles,
+)
 from yt_downloader_api.services.downloads import (
     DownloadBatchItemInput,
     DownloadJobNotFoundError,
@@ -46,10 +56,6 @@ from yt_downloader_api.services.filesystem import (
 from yt_downloader_api.services.library_exclusions import (
     LibraryExclusionsConfigurationError,
     load_library_excluded_names,
-)
-from yt_downloader_api.services.profiles import (
-    ProfilesConfigurationError,
-    load_enabled_profile,
 )
 from yt_downloader_api.services.source_urls import (
     InvalidSourceUrlError,
@@ -230,12 +236,19 @@ def get_download_job_repository() -> Generator[DownloadJobWriter]:
 @router.get("/downloads", response_model=DownloadJobListResponse)
 def list_downloads(
     repository: Annotated[DownloadJobWriter, Depends(get_download_job_repository)],
+    context: Annotated[AuthContext, Depends(get_auth_context)],
     profile_id: str | None = None,
     status_filter: Annotated[DownloadJobStatus | None, Query(alias="status")] = None,
     batch_id: str | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 25,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> DownloadJobListResponse:
+    allowed_profile_ids = get_allowed_profile_ids(context)
+    if profile_id is not None and profile_id not in allowed_profile_ids:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=PROFILE_NOT_FOUND_MESSAGE,
+        )
     try:
         jobs, total = list_download_jobs(
             repository=repository,
@@ -244,6 +257,7 @@ def list_downloads(
             profile_id=profile_id,
             status=status_filter.value if status_filter else None,
             batch_id=batch_id,
+            profile_ids=allowed_profile_ids,
         )
     except DownloadPersistenceError as exc:
         raise download_service_unavailable(exc) from exc
@@ -260,6 +274,7 @@ def list_downloads(
 def get_download(
     job_id: str,
     repository: Annotated[DownloadJobWriter, Depends(get_download_job_repository)],
+    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> DownloadJobDetailResponse:
     try:
         job = get_download_job(repository, job_id)
@@ -269,6 +284,8 @@ def get_download(
         raise download_job_not_found(exc) from exc
     except DownloadPersistenceError as exc:
         raise download_service_unavailable(exc) from exc
+    if job.profile_id not in get_allowed_profile_ids(context):
+        raise download_job_not_found(DownloadJobNotFoundError())
 
     return to_download_detail_response(job)
 
@@ -277,10 +294,14 @@ def get_download(
 def list_download_events(
     job_id: str,
     repository: Annotated[DownloadJobWriter, Depends(get_download_job_repository)],
+    context: Annotated[AuthContext, Depends(get_auth_context)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> DownloadJobEventListResponse:
     try:
+        job = get_download_job(repository, job_id)
+        if job.profile_id not in get_allowed_profile_ids(context):
+            raise DownloadJobNotFoundError
         events, total = list_download_job_events(repository, job_id, limit, offset)
     except InvalidDownloadJobIdError as exc:
         raise HTTPException(status_code=422, detail="Invalid download job ID.") from exc
@@ -301,6 +322,7 @@ def list_download_events(
 def create_download(
     request: CreateDownloadRequest,
     repository: Annotated[DownloadJobWriter, Depends(get_download_job_repository)],
+    context: Annotated[AuthContext, Depends(require_csrf_token)],
 ) -> DownloadJobResponse:
     try:
         source_url = validate_source_url(request.source_url)
@@ -328,16 +350,18 @@ def create_download(
             detail=INVALID_REQUESTED_FILENAME_MESSAGE,
         ) from exc
 
-    settings = get_settings()
     try:
-        profile = load_enabled_profile(
-            settings.profiles_config_path,
+        profile = get_authorized_profile(
+            context.session,
+            context.auth.user,
             request.profile_id,
+            require_write=True,
         )
+        settings = get_settings()
         excluded_names = load_library_excluded_names(
             settings.library_exclusions_config_path
         )
-    except ProfilesConfigurationError as exc:
+    except ProfilePersistenceError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=PROFILES_UNAVAILABLE_MESSAGE,
@@ -421,9 +445,13 @@ def create_download(
     response_model=BatchPreviewResponse,
 )
 def preview_download_batch(
-    profile_id: str, request: BatchRequest
+    profile_id: str,
+    request: BatchRequest,
+    context: Annotated[AuthContext, Depends(require_csrf_token)],
 ) -> BatchPreviewResponse:
-    profile, excluded_names = load_download_profile_and_exclusions(profile_id)
+    profile, excluded_names = load_download_profile_and_exclusions(
+        profile_id, context, True
+    )
     return validate_batch_request(profile.root_path, request, excluded_names)
 
 
@@ -436,8 +464,11 @@ def create_download_batch(
     profile_id: str,
     request: BatchRequest,
     repository: Annotated[DownloadJobWriter, Depends(get_download_job_repository)],
+    context: Annotated[AuthContext, Depends(require_csrf_token)],
 ) -> CreatedDownloadBatchResponse:
-    profile, excluded_names = load_download_profile_and_exclusions(profile_id)
+    profile, excluded_names = load_download_profile_and_exclusions(
+        profile_id, context, True
+    )
     preview = validate_batch_request(profile.root_path, request, excluded_names)
     if not preview.valid:
         raise HTTPException(status_code=422, detail=BATCH_INVALID_MESSAGE)
@@ -475,10 +506,11 @@ def create_download_batch(
 def list_profile_download_batches(
     profile_id: str,
     repository: Annotated[DownloadJobWriter, Depends(get_download_job_repository)],
+    context: Annotated[AuthContext, Depends(get_auth_context)],
     limit: Annotated[int, Query(ge=1, le=100)] = 10,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> DownloadBatchListResponse:
-    load_download_profile_and_exclusions(profile_id)
+    load_download_profile_and_exclusions(profile_id, context)
     try:
         batches, total = list_download_batches(repository, profile_id, limit, offset)
     except DownloadPersistenceError as exc:
@@ -495,6 +527,7 @@ def list_profile_download_batches(
 def get_download_batch_detail(
     batch_id: str,
     repository: Annotated[DownloadJobWriter, Depends(get_download_job_repository)],
+    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> DownloadBatchSummaryResponse:
     try:
         batch = get_download_batch(repository, batch_id)
@@ -509,6 +542,11 @@ def get_download_batch_detail(
         ) from exc
     except DownloadPersistenceError as exc:
         raise download_service_unavailable(exc) from exc
+    if batch.profile_id not in get_allowed_profile_ids(context):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=DOWNLOAD_BATCH_NOT_FOUND_MESSAGE,
+        )
     return to_batch_summary_response(batch)
 
 
@@ -541,14 +579,23 @@ def to_download_list_item_response(job: DownloadJob) -> DownloadJobListItemRespo
     )
 
 
-def load_download_profile_and_exclusions(profile_id: str):
+def load_download_profile_and_exclusions(
+    profile_id: str,
+    context: AuthContext,
+    require_write: bool = False,
+):
     settings = get_settings()
     try:
-        profile = load_enabled_profile(settings.profiles_config_path, profile_id)
+        profile = get_authorized_profile(
+            context.session,
+            context.auth.user,
+            profile_id,
+            require_write=require_write,
+        )
         excluded_names = load_library_excluded_names(
             settings.library_exclusions_config_path
         )
-    except ProfilesConfigurationError as exc:
+    except ProfilePersistenceError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=PROFILES_UNAVAILABLE_MESSAGE,
@@ -564,6 +611,19 @@ def load_download_profile_and_exclusions(profile_id: str):
             detail=PROFILE_NOT_FOUND_MESSAGE,
         )
     return profile, excluded_names
+
+
+def get_allowed_profile_ids(context: AuthContext) -> set[str]:
+    try:
+        return {
+            profile.id
+            for profile in list_authorized_profiles(context.session, context.auth.user)
+        }
+    except ProfilePersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PROFILES_UNAVAILABLE_MESSAGE,
+        ) from exc
 
 
 def validate_batch_request(

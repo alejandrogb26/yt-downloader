@@ -18,9 +18,20 @@ import type {
   RenameEntryRequest,
   TrashEntryRequest,
   TrashedEntry,
+  AuthResponse,
 } from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
+let csrfToken: string | null = null;
+let unauthorizedHandler: (() => void) | null = null;
+
+export function setCsrfToken(token: string | null) {
+  csrfToken = token;
+}
+
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler;
+}
 
 export async function getHealth(): Promise<{ status: string }> {
   return requestJson<{ status: string }>("/health");
@@ -28,6 +39,26 @@ export async function getHealth(): Promise<{ status: string }> {
 
 export async function getProfiles(): Promise<ProfilesResponse> {
   return requestJson<ProfilesResponse>("/profiles");
+}
+
+export async function login(
+  username: string,
+  password: string,
+  rememberMe: boolean,
+): Promise<AuthResponse> {
+  return requestJson<AuthResponse>("/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password, remember_me: rememberMe }),
+  });
+}
+
+export async function getCurrentSession(): Promise<AuthResponse> {
+  return requestJson<AuthResponse>("/auth/me");
+}
+
+export async function logout(): Promise<{ status: string }> {
+  return requestJson<{ status: string }>("/auth/logout", { method: "POST" });
 }
 
 export async function getLibraryEntries(
@@ -172,8 +203,10 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       ...init,
+      credentials: "include",
       headers: {
         Accept: "application/json",
+        ...csrfHeader(init?.method),
         ...init?.headers,
       },
     });
@@ -183,12 +216,23 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 
   const data: unknown = await readJsonSafely(response);
   if (!response.ok) {
+    if (response.status === 401) {
+      unauthorizedHandler?.();
+    }
     throw new ApiError(readErrorDetail(data), response.status);
   }
   if (data === null || typeof data !== "object") {
     throw new ApiError("La API devolvió una respuesta inesperada.", response.status);
   }
   return data as T;
+}
+
+function csrfHeader(method?: string): Record<string, string> {
+  const normalized = method?.toUpperCase() ?? "GET";
+  if (!csrfToken || !["POST", "PUT", "PATCH", "DELETE"].includes(normalized)) {
+    return {};
+  }
+  return { "X-CSRF-Token": csrfToken };
 }
 
 async function readJsonSafely(response: Response): Promise<unknown> {

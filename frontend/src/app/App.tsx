@@ -4,6 +4,7 @@ import { RouterProvider } from "react-router-dom";
 
 import { SelectionProvider } from "./SelectionContext";
 import { ThemeProvider } from "./ThemeContext";
+import { AuthProvider } from "./AuthContext";
 import { createQueryClient } from "./query-client";
 import { createAppRouter } from "./router";
 
@@ -14,9 +15,11 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <SelectionProvider>
-          <RouterProvider router={router} />
-        </SelectionProvider>
+        <AuthProvider>
+          <SelectionProvider>
+            <RouterProvider router={router} />
+          </SelectionProvider>
+        </AuthProvider>
       </ThemeProvider>
     </QueryClientProvider>
   );

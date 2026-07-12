@@ -1,11 +1,19 @@
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { Navigate, NavLink, Outlet, useLocation } from "react-router-dom";
 
+import { useAuth } from "../app/useAuth";
 import { useTheme } from "../app/ThemeContext";
-import { IconButton } from "./ui";
+import { Button, IconButton } from "./ui";
 
 export function Layout() {
   const location = useLocation();
   const { theme, setTheme } = useTheme();
+  const auth = useAuth();
+  if (auth.loading) {
+    return <main className="page-content">Comprobando sesión...</main>;
+  }
+  if (!auth.user) {
+    return <Navigate to="/login" replace />;
+  }
   const isDownloads = location.pathname.startsWith("/downloads") || location.pathname === "/";
   const title = isDownloads ? "Descargas" : "Biblioteca";
   const subtitle = isDownloads
@@ -49,6 +57,9 @@ export function Layout() {
           >
             <span aria-hidden="true">{theme === "dark" ? "☀" : "☾"}</span>
           </IconButton>
+          <Button variant="ghost" onClick={() => void auth.logout()}>
+            Salir
+          </Button>
         </header>
 
         <main className="page-content">

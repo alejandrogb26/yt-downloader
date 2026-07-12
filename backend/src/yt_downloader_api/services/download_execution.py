@@ -11,6 +11,7 @@ from time import sleep
 from typing import Any, Protocol
 
 from yt_downloader_api.core.config import Settings
+from yt_downloader_api.db.session import get_session_factory
 from yt_downloader_api.downloaders.base import (
     AudioDownloader,
     AudioDownloadResult,
@@ -18,6 +19,11 @@ from yt_downloader_api.downloaders.base import (
 )
 from yt_downloader_api.models.profiles import LibraryProfile
 from yt_downloader_api.services import filesystem
+from yt_downloader_api.services.db_profiles import (
+    ProfilePersistenceError,
+    load_enabled_profile,
+    load_enabled_profiles,
+)
 from yt_downloader_api.services.download_queue import (
     CompletedDownloadJob,
     DownloadQueue,
@@ -29,11 +35,6 @@ from yt_downloader_api.services.download_queue import (
 from yt_downloader_api.services.filenames import (
     InvalidRequestedFilenameError,
     validate_requested_filename,
-)
-from yt_downloader_api.services.profiles import (
-    ProfilesConfigurationError,
-    load_enabled_profile,
-    load_profiles_config,
 )
 
 DOWNLOAD_FAILED_MESSAGE = "Audio download failed."
@@ -190,7 +191,7 @@ def execute_download_job(
         )
         return False
     except (
-        ProfilesConfigurationError,
+        ProfilePersistenceError,
         filesystem.DirectoryNotFoundError,
         filesystem.InvalidDirectoryPathError,
         filesystem.ProfileStorageUnavailableError,
@@ -289,21 +290,36 @@ def validate_staging_root(settings: Settings) -> None:
     staging_root = Path(settings.download_staging_root)
     if not staging_root.is_absolute():
         raise StagingConfigurationError
-    profiles_config = load_profiles_config(settings.profiles_config_path)
+    session_factory = get_session_factory()
     staging_resolved = staging_root.resolve(strict=False)
-    for profile in profiles_config.profiles:
-        library_root = Path(profile.root_path).resolve(strict=False)
-        if staging_resolved == library_root:
-            raise StagingConfigurationError
-        try:
-            staging_resolved.relative_to(library_root)
-        except ValueError:
-            continue
-        raise StagingConfigurationError
+    try:
+        with session_factory() as session:
+            try:
+                session.profiles_config_path = settings.profiles_config_path
+            except Exception:
+                pass
+            profiles = load_enabled_profiles(session)
+            for profile in profiles:
+                library_root = Path(profile.root_path).resolve(strict=False)
+                if staging_resolved == library_root:
+                    raise StagingConfigurationError
+                try:
+                    staging_resolved.relative_to(library_root)
+                except ValueError:
+                    continue
+                raise StagingConfigurationError
+    except ProfilePersistenceError:
+        raise
 
 
 def get_current_profile(settings: Settings, profile_id: str) -> LibraryProfile:
-    profile = load_enabled_profile(settings.profiles_config_path, profile_id)
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        try:
+            session.profiles_config_path = settings.profiles_config_path
+        except Exception:
+            pass
+        profile = load_enabled_profile(session, profile_id)
     if profile is None:
         raise filesystem.ProfileStorageUnavailableError
     return profile

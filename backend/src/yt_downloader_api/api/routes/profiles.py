@@ -1,7 +1,19 @@
-from fastapi import APIRouter, HTTPException, status
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
+from yt_downloader_api.api.dependencies import (
+    AuthContext,
+    get_auth_context,
+    require_csrf_token,
+)
 from yt_downloader_api.core.config import get_settings
+from yt_downloader_api.services.db_profiles import (
+    ProfilePersistenceError,
+    get_authorized_profile,
+    list_authorized_profiles,
+)
 from yt_downloader_api.services.filesystem import (
     CannotMoveDirectoryIntoItselfError,
     DirectoryNotFoundError,
@@ -25,11 +37,6 @@ from yt_downloader_api.services.filesystem import (
 from yt_downloader_api.services.library_exclusions import (
     LibraryExclusionsConfigurationError,
     load_library_excluded_names,
-)
-from yt_downloader_api.services.profiles import (
-    ProfilesConfigurationError,
-    load_enabled_profile,
-    load_enabled_profiles,
 )
 
 router = APIRouter(tags=["profiles"])
@@ -113,11 +120,12 @@ class TrashEntryResponse(BaseModel):
 
 
 @router.get("/profiles", response_model=ProfilesResponse)
-def list_profiles() -> ProfilesResponse:
-    settings = get_settings()
+def list_profiles(
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+) -> ProfilesResponse:
     try:
-        profiles = load_enabled_profiles(settings.profiles_config_path)
-    except ProfilesConfigurationError as exc:
+        profiles = list_authorized_profiles(context.session, context.auth.user)
+    except ProfilePersistenceError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=PROFILES_UNAVAILABLE_MESSAGE,
@@ -132,8 +140,11 @@ def list_profiles() -> ProfilesResponse:
 
 
 @router.get("/profiles/{profile_id}/entries", response_model=ProfileEntriesResponse)
-def list_profile_entries(profile_id: str, path: str = "") -> ProfileEntriesResponse:
-    settings = get_settings()
+def list_profile_entries(
+    profile_id: str,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    path: str = "",
+) -> ProfileEntriesResponse:
     try:
         safe_path = validate_relative_directory_path(path)
     except InvalidDirectoryPathError as exc:
@@ -142,27 +153,7 @@ def list_profile_entries(profile_id: str, path: str = "") -> ProfileEntriesRespo
             detail=INVALID_DIRECTORY_PATH_MESSAGE,
         ) from exc
 
-    try:
-        profile = load_enabled_profile(settings.profiles_config_path, profile_id)
-        excluded_names = load_library_excluded_names(
-            settings.library_exclusions_config_path
-        )
-    except ProfilesConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=PROFILES_UNAVAILABLE_MESSAGE,
-        ) from exc
-    except LibraryExclusionsConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=LIBRARY_EXCLUSIONS_UNAVAILABLE_MESSAGE,
-        ) from exc
-
-    if profile is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=PROFILE_NOT_FOUND_MESSAGE,
-        )
+    profile, excluded_names = load_profile_and_exclusions(context, profile_id)
 
     try:
         entries = list_directory_entries(profile.root_path, safe_path, excluded_names)
@@ -211,30 +202,10 @@ def list_profile_entries(profile_id: str, path: str = "") -> ProfileEntriesRespo
 def search_profile_entries(
     profile_id: str,
     q: str,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
     limit: int = 50,
 ) -> ProfileSearchResponse:
-    settings = get_settings()
-    try:
-        profile = load_enabled_profile(settings.profiles_config_path, profile_id)
-        excluded_names = load_library_excluded_names(
-            settings.library_exclusions_config_path
-        )
-    except ProfilesConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=PROFILES_UNAVAILABLE_MESSAGE,
-        ) from exc
-    except LibraryExclusionsConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=LIBRARY_EXCLUSIONS_UNAVAILABLE_MESSAGE,
-        ) from exc
-
-    if profile is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=PROFILE_NOT_FOUND_MESSAGE,
-        )
+    profile, excluded_names = load_profile_and_exclusions(context, profile_id)
 
     try:
         results, truncated = search_entries(profile.root_path, q, limit, excluded_names)
@@ -273,29 +244,9 @@ def search_profile_entries(
 def create_profile_directory(
     profile_id: str,
     request: CreateDirectoryRequest,
+    context: Annotated[AuthContext, Depends(require_csrf_token)],
 ) -> CreatedDirectoryResponse:
-    settings = get_settings()
-    try:
-        profile = load_enabled_profile(settings.profiles_config_path, profile_id)
-        excluded_names = load_library_excluded_names(
-            settings.library_exclusions_config_path
-        )
-    except ProfilesConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=PROFILES_UNAVAILABLE_MESSAGE,
-        ) from exc
-    except LibraryExclusionsConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=LIBRARY_EXCLUSIONS_UNAVAILABLE_MESSAGE,
-        ) from exc
-
-    if profile is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=PROFILE_NOT_FOUND_MESSAGE,
-        )
+    profile, excluded_names = load_profile_and_exclusions(context, profile_id, True)
 
     try:
         created_directory = create_directory(
@@ -351,29 +302,9 @@ def create_profile_directory(
 def rename_profile_entry(
     profile_id: str,
     request: RenameEntryRequest,
+    context: Annotated[AuthContext, Depends(require_csrf_token)],
 ) -> ProfileEntry:
-    settings = get_settings()
-    try:
-        profile = load_enabled_profile(settings.profiles_config_path, profile_id)
-        excluded_names = load_library_excluded_names(
-            settings.library_exclusions_config_path
-        )
-    except ProfilesConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=PROFILES_UNAVAILABLE_MESSAGE,
-        ) from exc
-    except LibraryExclusionsConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=LIBRARY_EXCLUSIONS_UNAVAILABLE_MESSAGE,
-        ) from exc
-
-    if profile is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=PROFILE_NOT_FOUND_MESSAGE,
-        )
+    profile, excluded_names = load_profile_and_exclusions(context, profile_id, True)
 
     try:
         renamed_entry = rename_entry(
@@ -419,29 +350,9 @@ def rename_profile_entry(
 def move_profile_entry(
     profile_id: str,
     request: MoveEntryRequest,
+    context: Annotated[AuthContext, Depends(require_csrf_token)],
 ) -> ProfileEntry:
-    settings = get_settings()
-    try:
-        profile = load_enabled_profile(settings.profiles_config_path, profile_id)
-        excluded_names = load_library_excluded_names(
-            settings.library_exclusions_config_path
-        )
-    except ProfilesConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=PROFILES_UNAVAILABLE_MESSAGE,
-        ) from exc
-    except LibraryExclusionsConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=LIBRARY_EXCLUSIONS_UNAVAILABLE_MESSAGE,
-        ) from exc
-
-    if profile is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=PROFILE_NOT_FOUND_MESSAGE,
-        )
+    profile, excluded_names = load_profile_and_exclusions(context, profile_id, True)
 
     try:
         moved_entry = move_entry(
@@ -510,29 +421,9 @@ def move_profile_entry(
 def trash_profile_entry(
     profile_id: str,
     request: TrashEntryRequest,
+    context: Annotated[AuthContext, Depends(require_csrf_token)],
 ) -> TrashEntryResponse:
-    settings = get_settings()
-    try:
-        profile = load_enabled_profile(settings.profiles_config_path, profile_id)
-        excluded_names = load_library_excluded_names(
-            settings.library_exclusions_config_path
-        )
-    except ProfilesConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=PROFILES_UNAVAILABLE_MESSAGE,
-        ) from exc
-    except LibraryExclusionsConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=LIBRARY_EXCLUSIONS_UNAVAILABLE_MESSAGE,
-        ) from exc
-
-    if profile is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=PROFILE_NOT_FOUND_MESSAGE,
-        )
+    profile, excluded_names = load_profile_and_exclusions(context, profile_id, True)
 
     try:
         trashed_entry = trash_entry(profile.root_path, request.path, excluded_names)
@@ -558,3 +449,38 @@ def trash_profile_entry(
         status=trashed_entry.status,
         original_path=trashed_entry.original_path,
     )
+
+
+def load_profile_and_exclusions(
+    context: AuthContext,
+    profile_id: str,
+    require_write: bool = False,
+):
+    settings = get_settings()
+    try:
+        profile = get_authorized_profile(
+            context.session,
+            context.auth.user,
+            profile_id,
+            require_write=require_write,
+        )
+        excluded_names = load_library_excluded_names(
+            settings.library_exclusions_config_path
+        )
+    except ProfilePersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PROFILES_UNAVAILABLE_MESSAGE,
+        ) from exc
+    except LibraryExclusionsConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=LIBRARY_EXCLUSIONS_UNAVAILABLE_MESSAGE,
+        ) from exc
+
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=PROFILE_NOT_FOUND_MESSAGE,
+        )
+    return profile, excluded_names

@@ -112,7 +112,7 @@ async def test_readiness_returns_ready_with_database_and_valid_config(
         "status": "ready",
         "checks": {
             "database": "ok",
-            "profiles_config": "ok",
+            "auth_tables": "ok",
             "library_exclusions_config": "ok",
         },
     }
@@ -142,7 +142,7 @@ async def test_readiness_returns_503_when_database_is_unavailable(
 
 
 @pytest.mark.anyio
-async def test_readiness_returns_503_when_profiles_file_is_invalid(
+async def test_readiness_ignores_profiles_file_for_runtime_profiles(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -160,8 +160,8 @@ async def test_readiness_returns_503_when_profiles_file_is_invalid(
     ) as client:
         response = await client.get("/api/v1/health/ready")
 
-    assert response.status_code == 503
-    assert response.json()["checks"]["profiles_config"] == "invalid"
+    assert response.status_code == 200
+    assert response.json()["checks"]["auth_tables"] == "ok"
     assert str(tmp_path) not in response.text
 
 

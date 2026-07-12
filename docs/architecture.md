@@ -5,7 +5,7 @@
 ## Componentes previstos
 
 - Frontend: aplicación React/Vite separada para seleccionar perfiles, navegar y gestionar operaciones básicas de biblioteca, elegir destino, crear trabajos y consultar estados.
-- Backend: API FastAPI con Pydantic v2. Actualmente incluye configuración base, `GET /api/v1/health`, `GET /api/v1/profiles`, navegación con `GET /api/v1/profiles/{profile_id}/entries`, creación de directorios con `POST /api/v1/profiles/{profile_id}/directories`, renombrado con `PATCH /api/v1/profiles/{profile_id}/entries/rename`, movimiento con `POST /api/v1/profiles/{profile_id}/entries/move`, envío a papelera con `DELETE /api/v1/profiles/{profile_id}/entries` y endpoints para crear y consultar trabajos de descarga.
+- Backend: API FastAPI con Pydantic v2. Actualmente incluye autenticación con cookie HttpOnly, `GET /api/v1/health`, `GET /api/v1/profiles`, navegación con `GET /api/v1/profiles/{profile_id}/entries`, creación de directorios con `POST /api/v1/profiles/{profile_id}/directories`, renombrado con `PATCH /api/v1/profiles/{profile_id}/entries/rename`, movimiento con `POST /api/v1/profiles/{profile_id}/entries/move`, envío a papelera con `DELETE /api/v1/profiles/{profile_id}/entries` y endpoints para crear y consultar trabajos de descarga.
 - Worker de descargas: proceso independiente persistente y concurrente para reclamar trabajos de MariaDB, descargar pistas de audio con `yt-dlp`, publicar resultados en NFS y finalizar estados. Conserva `--once` solo como modo manual o de diagnóstico.
 - MariaDB: base de datos para trabajos de descarga, eventos, estados e historial. La capa ORM y las migraciones iniciales ya están preparadas.
 - Almacenamiento NFS: ubicaciones compartidas por perfil para archivos descargados.
@@ -62,17 +62,15 @@ Frontend Biblioteca
 
 ## Perfiles de biblioteca
 
-Los perfiles se definen en un fichero JSON externo (`profiles.json`) indicado por la variable de entorno `PROFILES_CONFIG_PATH`. Su valor por defecto es `/etc/yt-downloader/profiles.json`.
+Los perfiles runtime se definen en MariaDB en `library_profiles`. El antiguo `profiles.json` queda reservado para importación inicial mediante CLI administrativa.
 
 Las exclusiones del navegador de biblioteca se definen en un fichero independiente indicado por `LIBRARY_EXCLUSIONS_CONFIG_PATH`, con valor de producción `/etc/yt-downloader/library-exclusions.json`. Si no existe, no se excluye ningún nombre; si existe y no es válido, las rutas de biblioteca devuelven un error seguro sin rutas internas.
 
-Este fichero es configuración de infraestructura: contiene las rutas raíz reales de cada biblioteca y no debe exponerse al cliente. La API solo devuelve `id` y `display_name` de perfiles habilitados.
+`library_profiles.root_path` contiene las rutas raíz reales de cada biblioteca y no debe exponerse al cliente. La API solo devuelve `id` y `display_name` de perfiles habilitados autorizados para el usuario.
 
 El ejemplo versionable vive en `config/profiles.example.json`. Para desarrollo local puede usarse así, sin modificar `/etc`:
 
-```bash
-PROFILES_CONFIG_PATH="$PWD/config/profiles.example.json" uv run --project backend uvicorn yt_downloader_api.main:app --host 127.0.0.1 --port 8080 --reload
-```
+El ejemplo versionable `config/profiles.example.json` puede importarse con `python -m yt_downloader_api.admin.import_profiles --profiles-json config/profiles.example.json` en un entorno local con `DATABASE_URL` configurada.
 
 ## Navegación de bibliotecas
 
@@ -103,7 +101,7 @@ El sistema de archivos NFS será la fuente de verdad de las bibliotecas. Todaví
 
 ## Persistencia y flujo futuro
 
-La API FastAPI usa MariaDB para registrar trabajos de descarga y consultar sus eventos. El worker persistente también usa MariaDB para tomar trabajos, actualizar progreso, mantener heartbeat, registrar eventos y cerrar estados.
+La API FastAPI usa MariaDB para usuarios, sesiones, perfiles, permisos, trabajos de descarga y eventos. El worker persistente también usa MariaDB para tomar trabajos, cargar perfiles, actualizar progreso, mantener heartbeat, registrar eventos y cerrar estados.
 
 Flujo previsto:
 
@@ -159,7 +157,7 @@ Las descargas por lote crean una fila en `download_batches` y trabajos normales 
 
 `GET /api/v1/health` es liveness: responde si el proceso FastAPI está vivo y no depende de MariaDB, NFS ni YouTube.
 
-`GET /api/v1/health/ready` es readiness: realiza una consulta ligera `SELECT 1` contra MariaDB y valida que se puedan cargar la configuración de perfiles y exclusiones de biblioteca. No recorre montajes NFS, no lista bibliotecas, no ejecuta migraciones y no expone rutas absolutas ni secretos. Devuelve `200` con `status=ready` si todo está disponible y `503` con checks públicos si alguna dependencia no está lista.
+`GET /api/v1/health/ready` es readiness: realiza una consulta ligera `SELECT 1` contra MariaDB, comprueba que existan las tablas de autenticación/perfiles/sesiones y valida la configuración de exclusiones de biblioteca. No recorre montajes NFS, no lista bibliotecas, no ejecuta migraciones y no expone rutas absolutas ni secretos. Devuelve `200` con `status=ready` si todo está disponible y `503` con checks públicos si alguna dependencia no está lista.
 
 ## Búsqueda de biblioteca
 
