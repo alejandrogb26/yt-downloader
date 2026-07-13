@@ -19,6 +19,7 @@ export function Layout() {
   const subtitle = isDownloads
     ? "Crea trabajos y sigue la cola de audio."
     : "Explora perfiles y elige destinos sin cargar todo el NFS.";
+  const userLabel = auth.user.display_name || auth.user.username;
 
   return (
     <div className="app-shell">
@@ -51,15 +52,20 @@ export function Layout() {
             <h1>{title}</h1>
             <p className="topbar-subtitle">{subtitle}</p>
           </div>
-          <IconButton
-            label={theme === "dark" ? "Cambiar a tema claro" : "Cambiar a tema oscuro"}
-            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-          >
-            <span aria-hidden="true">{theme === "dark" ? "☀" : "☾"}</span>
-          </IconButton>
-          <Button variant="ghost" onClick={() => void auth.logout()}>
-            Salir
-          </Button>
+          <div className="topbar-actions">
+            <IconButton
+              label={theme === "dark" ? "Cambiar a tema claro" : "Cambiar a tema oscuro"}
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            >
+              <span aria-hidden="true">{theme === "dark" ? "☀" : "☾"}</span>
+            </IconButton>
+            <div className="session-pill" aria-label={`Sesión iniciada como ${userLabel}`}>
+              <span>{userLabel}</span>
+              <Button variant="secondary" onClick={() => void auth.logout()}>
+                Salir
+              </Button>
+            </div>
+          </div>
         </header>
 
         <main className="page-content">

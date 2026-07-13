@@ -36,9 +36,21 @@ export function LoginPage() {
 
   return (
     <main className="login-page">
-      <section className="panel login-card">
-        <p className="eyebrow">yt-downloader</p>
-        <h1>Iniciar sesión</h1>
+      <section className="login-card" aria-labelledby="login-title">
+        <div className="login-brand">
+          <span className="brand-mark" aria-hidden="true">
+            ▶
+          </span>
+          <div>
+            <p>yt-downloader</p>
+            <strong>Audio LAN</strong>
+          </div>
+        </div>
+        <div className="login-heading">
+          <p className="eyebrow">Acceso privado</p>
+          <h1 id="login-title">Iniciar sesión</h1>
+          <p>Accede a tu biblioteca de audio.</p>
+        </div>
         <form className="form-grid" onSubmit={submit}>
           <label className="field">
             <span>Usuario</span>
@@ -50,10 +62,10 @@ export function LoginPage() {
           </label>
           <label className="inline-check">
             <input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />
-            Mantener sesión iniciada
+            <span>Mantener sesión iniciada</span>
           </label>
           {error ? <p className="form-error">{error}</p> : null}
-          <Button type="submit" disabled={submitting}>{submitting ? "Entrando..." : "Entrar"}</Button>
+          <Button type="submit" className="button--wide" disabled={submitting}>{submitting ? "Entrando..." : "Entrar"}</Button>
         </form>
       </section>
     </main>
