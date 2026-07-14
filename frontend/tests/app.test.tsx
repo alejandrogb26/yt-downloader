@@ -4,18 +4,31 @@ import userEvent from "@testing-library/user-event";
 import { Navigate, RouterProvider, createMemoryRouter } from "react-router-dom";
 import { describe, expect, test, vi } from "vitest";
 
+import { AuthProvider } from "../src/app/AuthContext";
 import { SelectionProvider } from "../src/app/SelectionContext";
 import { ThemeProvider } from "../src/app/ThemeContext";
 import { createQueryClient } from "../src/app/query-client";
 import { Layout } from "../src/components/Layout";
 import { DownloadsPage } from "../src/pages/DownloadsPage";
 import { LibraryPage } from "../src/pages/LibraryPage";
+import { LoginPage } from "../src/pages/LoginPage";
 
 const profilesResponse = {
   profiles: [
     { id: "pepe", display_name: "Pepe" },
     { id: "manolo", display_name: "Manolo" },
   ],
+};
+
+const authResponse = {
+  user: {
+    id: "user-1",
+    username: "pepe",
+    display_name: "Pepe",
+    is_admin: false,
+  },
+  profiles: profilesResponse.profiles,
+  csrf_token: "csrf-token",
 };
 
 const rootEntriesResponse = {
@@ -177,6 +190,9 @@ describe("frontend rediseñado", () => {
 
     expect(await screen.findByText("Trabajo de descarga creado correctamente.")).toBeInTheDocument();
     const postCall = findFetchCall(fetchMock, "/api/v1/downloads", "POST");
+    expect((postCall?.[1]?.headers as Record<string, string>)["X-CSRF-Token"]).toBe(
+      "csrf-token",
+    );
     expect(JSON.parse(String(postCall?.[1]?.body))).toEqual({
       profile_id: "pepe",
       source_url: "https://www.youtube.com/watch?v=abc",
@@ -470,12 +486,64 @@ describe("frontend rediseñado", () => {
   });
 
   test("maneja API no disponible con error claro", async () => {
-    vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("network"));
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).endsWith("/auth/me")) return jsonResponse(authResponse);
+      throw new TypeError("network");
+    });
     renderApp(["/downloads"]);
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Se ha producido un error al comunicarse con el servicio.",
     );
+  });
+
+  test("redirige a login sin sesión", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).endsWith("/auth/me")) return jsonResponse({ detail: "no" }, 401);
+      return jsonResponse({ detail: "Not found" }, 404);
+    });
+
+    renderApp(["/downloads"]);
+
+    expect(await screen.findByRole("heading", { name: "Iniciar sesión" })).toBeInTheDocument();
+  });
+
+  test("login correcto envía remember_me", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/auth/me")) return jsonResponse({ detail: "no" }, 401);
+      if (url.endsWith("/auth/login")) return jsonResponse(authResponse);
+      if (url.endsWith("/downloads?limit=25&offset=0")) return jsonResponse(downloadsResponse);
+      if (url.endsWith("/profiles")) return jsonResponse(profilesResponse);
+      if (url.includes("/download-batches")) return jsonResponse(batchesResponse);
+      return jsonResponse({ detail: "Not found" }, 404);
+    });
+    const user = userEvent.setup();
+    renderApp(["/login"]);
+
+    await user.type(await screen.findByLabelText("Usuario"), "pepe");
+    await user.type(screen.getByLabelText("Contraseña"), "secret");
+    await user.click(screen.getByLabelText("Mantener sesión iniciada"));
+    await user.click(screen.getByRole("button", { name: "Entrar" }));
+
+    await screen.findByRole("heading", { name: "Nueva descarga" });
+    const loginCall = findFetchCall(fetchMock, "/api/v1/auth/login", "POST");
+    expect(JSON.parse(String(loginCall?.[1]?.body))).toMatchObject({
+      username: "pepe",
+      password: "secret",
+      remember_me: true,
+    });
+  });
+
+  test("logout visible limpia sesión", async () => {
+    const fetchMock = mockApi();
+    const user = userEvent.setup();
+    renderApp(["/downloads"]);
+
+    await user.click(await screen.findByRole("button", { name: "Salir" }));
+
+    expect(findFetchCall(fetchMock, "/api/v1/auth/logout", "POST")).toBeDefined();
+    expect(await screen.findByRole("heading", { name: "Iniciar sesión" })).toBeInTheDocument();
   });
 });
 
@@ -488,10 +556,11 @@ function renderApp(initialEntries: string[]) {
         element: <Layout />,
         children: [
           { index: true, element: <Navigate to="/downloads" replace /> },
-          { path: "downloads", element: <DownloadsPage /> },
-          { path: "library", element: <LibraryPage /> },
-        ],
-      },
+        { path: "downloads", element: <DownloadsPage /> },
+        { path: "library", element: <LibraryPage /> },
+      ],
+    },
+    { path: "/login", element: <LoginPage /> },
     ],
     { initialEntries },
   );
@@ -499,9 +568,11 @@ function renderApp(initialEntries: string[]) {
   return render(
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <SelectionProvider>
-          <RouterProvider router={router} />
-        </SelectionProvider>
+        <AuthProvider>
+          <SelectionProvider>
+            <RouterProvider router={router} />
+          </SelectionProvider>
+        </AuthProvider>
       </ThemeProvider>
     </QueryClientProvider>,
   );
@@ -524,6 +595,8 @@ function mockApi(
 ) {
   const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
+    if (url.endsWith("/auth/me")) return jsonResponse(authResponse);
+    if (url.endsWith("/auth/logout")) return jsonResponse({ status: "ok" });
     if (url.includes("/profiles/pepe/download-batches/preview")) {
       return jsonResponse(options.previewBody ?? batchPreviewResponse);
     }

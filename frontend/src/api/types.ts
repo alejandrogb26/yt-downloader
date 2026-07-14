@@ -7,6 +7,19 @@ export type ProfilesResponse = {
   profiles: Profile[];
 };
 
+export type AuthUser = {
+  id: string;
+  username: string;
+  display_name: string;
+  is_admin: boolean;
+};
+
+export type AuthResponse = {
+  user: AuthUser;
+  profiles: Profile[];
+  csrf_token: string;
+};
+
 export type LibraryEntry = {
   name: string;
   path: string;

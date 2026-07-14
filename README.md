@@ -10,7 +10,7 @@
 - MariaDB: base de datos relacional para trabajos de descarga, eventos e historial.
 - Almacenamiento NFS: destino compartido para los archivos descargados.
 
-Actualmente está implementada la base de la API en `backend`, la exposición de perfiles de biblioteca configurados por JSON, la navegación de bibliotecas, la búsqueda global por perfil, exclusiones de biblioteca, operaciones seguras sobre entradas, la base ORM/Alembic, trabajos individuales, descargas por lote, consulta de trabajos/eventos, un worker persistente concurrente con reintentos controlados para fallos de yt-dlp, un frontend React separado y plantillas de despliegue sin Docker en `infra/`. El frontend permite crear trabajos, crear lotes, listar la biblioteca, seleccionar destino, crear carpetas, renombrar entradas, mover entradas dentro del perfil y enviar entradas a papelera. No se incluye autenticación ni cancelación.
+Actualmente está implementada la base de la API en `backend`, autenticación por cookie HttpOnly, perfiles de biblioteca almacenados en MariaDB, permisos usuario-perfil, navegación de bibliotecas, búsqueda global por perfil, exclusiones de biblioteca, operaciones seguras sobre entradas, la base ORM/Alembic, trabajos individuales, descargas por lote, consulta de trabajos/eventos, un worker persistente concurrente con reintentos controlados para fallos de yt-dlp, un frontend React separado y plantillas de despliegue sin Docker en `infra/`. El frontend permite iniciar/cerrar sesión, crear trabajos, crear lotes, listar la biblioteca, seleccionar destino, crear carpetas, renombrar entradas, mover entradas dentro del perfil y enviar entradas a papelera. No se incluye registro público, recuperación de contraseña ni cancelación.
 
 Topología de despliegue prevista en LAN con CT LXC:
 
@@ -32,9 +32,9 @@ El DNS interno `music.alejandrogb.local` debe resolver al Nginx central, no al C
 
 ## Perfiles de biblioteca
 
-Los perfiles definen bibliotecas disponibles para el sistema. Cada perfil tiene un identificador público, un nombre visible y una ruta raíz interna (`root_path`) donde estará la biblioteca. En despliegue, cada perfil puede tener su propio montaje NFS, por ejemplo `/mnt/music/alejandrogb` y `/mnt/music/pepe`; `/mnt/music` puede ser solo el directorio padre local.
+Los perfiles definen bibliotecas disponibles para el sistema y se almacenan en MariaDB en `library_profiles`. Cada perfil tiene un `slug` público compatible con el antiguo `profile_id`, un nombre visible y una ruta raíz interna (`root_path`) donde estará la biblioteca. En despliegue, cada perfil puede tener su propio montaje NFS, por ejemplo `/mnt/music/alejandrogb` y `/mnt/music/pepe`; `/mnt/music` puede ser solo el directorio padre local.
 
-La API `GET /api/v1/profiles` devuelve solo perfiles habilitados y nunca expone `root_path` al cliente. Las rutas reales son configuración de infraestructura.
+La API `GET /api/v1/profiles` devuelve solo perfiles habilitados autorizados para el usuario autenticado y nunca expone `root_path` al cliente. Las rutas reales son configuración de infraestructura. Los usuarios admin ven todos los perfiles habilitados.
 
 La API `GET /api/v1/profiles/{profile_id}/entries` permite listar la raíz de una biblioteca o navegar por subdirectorios usando rutas relativas. No sigue enlaces simbólicos, no muestra elementos ocultos que comienzan por `.` y no devuelve rutas absolutas.
 
@@ -48,7 +48,7 @@ La API `DELETE /api/v1/profiles/{profile_id}/entries` no borra definitivamente. 
 
 La API `POST /api/v1/downloads` registra un trabajo de descarga en MariaDB con estado inicial `queued`, pero no descarga desde el proceso HTTP. También se pueden listar trabajos, consultar su detalle y ver sus eventos.
 
-El worker reclama como máximo un trabajo `queued`, lo marca como `running`, descarga una única pista de audio con la librería Python `yt-dlp`, publica el fichero final en la biblioteca y termina. Al arrancar también marca como `failed` los trabajos `running` cuyo heartbeat sea demasiado antiguo.
+El worker reclama trabajos `queued`, los marca como `running`, consulta el perfil en MariaDB, descarga una única pista de audio con la librería Python `yt-dlp`, publica el fichero final en la biblioteca y termina. Al arrancar también marca como `failed` los trabajos `running` cuyo heartbeat sea demasiado antiguo.
 
 Límites actuales: no hay borrado definitivo, vaciado de papelera, restauración, autenticación, conversión MP3/FLAC, metadatos embebidos, carátulas, playlists ni postprocesado.
 
@@ -66,7 +66,7 @@ La fase de resolución/descarga con yt-dlp se reintenta dentro del mismo trabajo
 
 El esquema se aplica con Alembic. La API no crea tablas al arrancar y `GET /api/v1/health` funciona aunque `DATABASE_URL` no esté configurada. `GET /api/v1/health/ready` comprueba de forma ligera MariaDB y la configuración de perfiles/exclusiones para saber si la aplicación está lista para operar.
 
-Hay un ejemplo versionable en `config/profiles.example.json`. El fichero real `config/profiles.json` está ignorado por Git. Las exclusiones administradas del navegador de biblioteca se configuran con `LIBRARY_EXCLUSIONS_CONFIG_PATH`; en producción apunta a `/etc/yt-downloader/library-exclusions.json` y hay un ejemplo en `infra/config/library-exclusions.json.example`.
+Hay un ejemplo versionable en `config/profiles.example.json`, pero `profiles.json` queda obsoleto como fuente runtime. Se conserva para importación inicial con `python -m yt_downloader_api.admin.import_profiles --profiles-json /etc/yt-downloader/profiles.json`. Las exclusiones administradas del navegador de biblioteca se configuran con `LIBRARY_EXCLUSIONS_CONFIG_PATH`; en producción apunta a `/etc/yt-downloader/library-exclusions.json` y hay un ejemplo en `infra/config/library-exclusions.json.example`.
 
 ## Requisitos
 
@@ -125,6 +125,8 @@ En desarrollo, Vite reenvía `/api` a `http://127.0.0.1:8080`, evitando CORS sin
 
 En producción, Swagger UI se consulta en `/docs`, ReDoc en `/redoc` y OpenAPI JSON en `/openapi.json`. Estas rutas pasan por el proxy normal de la aplicación; no se abre ningún puerto nuevo y FastAPI sigue escuchando solo en `127.0.0.1:8080`.
 
+La API usa sesiones persistidas en MariaDB y cookie `HttpOnly`. En producción `SESSION_COOKIE_SECURE=true` asume que Nginx termina HTTPS antes de reenviar al CT. Las mutaciones autenticadas envían `X-CSRF-Token`; la SPA lo conserva solo en memoria y no guarda tokens en `localStorage`.
+
 Ejecutar verificaciones frontend:
 
 ```bash
@@ -163,6 +165,15 @@ curl http://127.0.0.1:8080/api/v1/health/ready
 ```
 
 `/api/v1/health` es un liveness barato: no depende de MariaDB ni de NFS. `/api/v1/health/ready` comprueba conectividad ligera con MariaDB y validación de configuración de perfiles y exclusiones; no recorre NFS, no ejecuta migraciones y no contacta YouTube.
+
+Bootstrap mínimo tras migrar base de datos:
+
+```bash
+uv run --project backend alembic -c backend/alembic.ini upgrade head
+python -m yt_downloader_api.admin.import_profiles --profiles-json /etc/yt-downloader/profiles.json
+python -m yt_downloader_api.admin.create_user --username admin --display-name Admin --admin --password
+python -m yt_downloader_api.admin.grant_profile --username admin --profile alejandrogb --role owner
+```
 
 Comprobar el runtime JavaScript usado por `yt-dlp` después de instalar Deno en el CT:
 

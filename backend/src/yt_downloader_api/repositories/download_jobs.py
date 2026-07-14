@@ -70,6 +70,7 @@ class DownloadJobRepository:
         profile_id: str | None = None,
         status: str | None = None,
         batch_id: str | None = None,
+        profile_ids: set[str] | None = None,
     ) -> tuple[list[DownloadJob], int]:
         statement = select(DownloadJob)
         count_statement = select(func.count()).select_from(DownloadJob)
@@ -79,6 +80,7 @@ class DownloadJobRepository:
             profile_id,
             status,
             batch_id,
+            profile_ids,
         )
         statement = (
             statement.order_by(
@@ -169,7 +171,11 @@ def apply_job_filters(
     profile_id: str | None,
     status: str | None,
     batch_id: str | None,
+    profile_ids: set[str] | None,
 ) -> tuple[Select[tuple[DownloadJob]], Select[tuple[int]]]:
+    if profile_ids is not None:
+        statement = statement.where(DownloadJob.profile_id.in_(profile_ids))
+        count_statement = count_statement.where(DownloadJob.profile_id.in_(profile_ids))
     if profile_id is not None:
         statement = statement.where(DownloadJob.profile_id == profile_id)
         count_statement = count_statement.where(DownloadJob.profile_id == profile_id)

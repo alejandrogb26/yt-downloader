@@ -4,20 +4,33 @@ MariaDB será la base de datos relacional del sistema para la cola de trabajos d
 
 ## Responsabilidades
 
-- `profiles.json`: define perfiles de biblioteca y sus rutas raíz. Es configuración de infraestructura.
+- `library_profiles`: define perfiles de biblioteca y sus rutas raíz. `profiles.json` queda obsoleto como fuente runtime y solo se usa para importación inicial.
 - NFS: contiene las bibliotecas y los archivos reales. Es la fuente de verdad del contenido.
-- MariaDB: almacena trabajos de descarga, eventos, progreso, errores y metadatos operativos.
+- MariaDB: almacena usuarios, sesiones, perfiles, permisos, trabajos de descarga, eventos, progreso, errores y metadatos operativos.
 
 MariaDB no sustituye al sistema de archivos ni almacena los archivos descargados.
 
 Cada trabajo creado en estado `queued` genera también un evento inicial en `download_job_events` con el mensaje `Download job queued.`. La creación del trabajo y del evento debe ser atómica.
 
-## Tablas Iniciales
+## Autenticación y Perfiles
+
+La fase 1 de autenticación añade estas tablas:
+
+- `users`: usuario normalizado, hash de contraseña versionado, nombre visible, flags `enabled` e `is_admin`, fechas y último login.
+- `library_profiles`: perfil/biblioteca con `slug` público compatible con el antiguo `profile_id`, nombre visible, `root_path` interno no expuesto, `enabled` y fechas.
+- `user_profile_access`: relación usuario-perfil con rol `owner`, `read_write` o `read_only`. En esta fase `owner` y `read_write` tienen acceso operativo completo; `read_only` queda reservado.
+- `user_sessions`: sesiones web con hash del token opaco, expiración, revocación, `last_seen_at`, user-agent e IP truncados.
+
+Las APIs siguen usando `/profiles/{profile_id}` y `profile_id` es el `slug` de `library_profiles`. Los usuarios no admin solo ven perfiles habilitados concedidos. Los usuarios admin ven todos los perfiles habilitados. `root_path`, `password_hash` y `session_token_hash` nunca se devuelven por API.
+
+Las sesiones usan cookie opaca `HttpOnly`. El token se guarda solo en el navegador; MariaDB almacena `session_token_hash`. Las mutaciones autenticadas requieren `X-CSRF-Token`, devuelto por `/api/v1/auth/login` y `/api/v1/auth/me`.
+
+## Tablas de Descarga
 
 `download_jobs` almacena la cola y el historial de trabajos de descarga:
 
 - `id`: UUID textual del trabajo.
-- `profile_id`: perfil de biblioteca definido en `profiles.json`, sin foreign key.
+- `profile_id`: slug público de `library_profiles`, conservado como texto para historial y compatibilidad.
 - `source_url`: URL origen.
 - `destination_relative_path`: destino relativo dentro del perfil.
 - `audio_policy`: política de audio solicitada, inicialmente `prefer_m4a_then_best_source`.
@@ -78,7 +91,7 @@ Los campos `source_*` registran la fuente real seleccionada por `yt-dlp`. Los ca
 - `message`: mensaje resumido.
 - `progress_percent`: progreso opcional.
 
-Los listados de trabajos consultan historial persistido y no dependen de que el perfil siga existiendo o esté habilitado actualmente en `profiles.json`.
+Los listados de trabajos consultan historial persistido y se filtran por los perfiles autorizados del usuario autenticado.
 
 Eventos principales de descarga:
 
@@ -126,6 +139,28 @@ uv run --project backend alembic -c backend/alembic.ini history
 ```
 
 `current` y `upgrade head` requieren `DATABASE_URL` configurada. Si falta, Alembic muestra un error seguro indicando que la variable es obligatoria.
+
+## Bootstrap de Usuarios y Perfiles
+
+Después de aplicar migraciones, importa los perfiles existentes una vez:
+
+```bash
+python -m yt_downloader_api.admin.import_profiles --profiles-json /etc/yt-downloader/profiles.json
+```
+
+Crea usuarios sin poner contraseñas en el historial de shell:
+
+```bash
+python -m yt_downloader_api.admin.create_user --username alejandrogb --display-name Alejandro --password
+python -m yt_downloader_api.admin.create_user --username admin --display-name Admin --admin --password
+```
+
+Concede acceso a bibliotecas:
+
+```bash
+python -m yt_downloader_api.admin.grant_profile --username alejandrogb --profile alejandrogb --role owner
+python -m yt_downloader_api.admin.grant_profile --username admin --profile alejandrogb --role owner
+```
 
 ## Seguridad
 

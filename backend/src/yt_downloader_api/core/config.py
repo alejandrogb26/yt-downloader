@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     download_progress_minimum_percent_delta: int = 1
     yt_dlp_max_attempts: int = 3
     yt_dlp_retry_initial_delay_seconds: int = 2
+    session_cookie_name: str = "yt_downloader_session"
+    session_cookie_secure: bool = True
+    session_cookie_samesite: str = "lax"
+    session_idle_timeout_seconds: int = 43200
+    session_remember_me_timeout_seconds: int = 2592000
+    session_token_bytes: int = 32
 
     @field_validator("download_staging_root")
     @classmethod
@@ -79,6 +85,25 @@ class Settings(BaseSettings):
             raise ValueError(
                 "yt_dlp_retry_initial_delay_seconds must be between 1 and 300"
             )
+        return value
+
+    @field_validator("session_cookie_samesite")
+    @classmethod
+    def validate_session_cookie_samesite(cls, value: str) -> str:
+        normalized = value.lower()
+        if normalized not in {"lax", "strict", "none"}:
+            raise ValueError("session_cookie_samesite must be lax, strict, or none")
+        return normalized
+
+    @field_validator(
+        "session_idle_timeout_seconds",
+        "session_remember_me_timeout_seconds",
+        "session_token_bytes",
+    )
+    @classmethod
+    def validate_positive_session_settings(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("session settings must be positive")
         return value
 
     @model_validator(mode="after")

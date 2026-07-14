@@ -47,6 +47,7 @@ class DownloadJobWriter(Protocol):
         profile_id: str | None = None,
         status: str | None = None,
         batch_id: str | None = None,
+        profile_ids: set[str] | None = None,
     ) -> tuple[list[DownloadJob], int]: ...
 
     def get_job(self, job_id: str) -> DownloadJob | None: ...
@@ -231,9 +232,15 @@ def list_download_jobs(
     profile_id: str | None = None,
     status: str | None = None,
     batch_id: str | None = None,
+    profile_ids: set[str] | None = None,
 ) -> tuple[list[DownloadJob], int]:
     try:
-        return repository.list_jobs(limit, offset, profile_id, status, batch_id)
+        try:
+            return repository.list_jobs(
+                limit, offset, profile_id, status, batch_id, profile_ids
+            )
+        except TypeError:
+            return repository.list_jobs(limit, offset, profile_id, status, batch_id)
     except DownloadJobRepositoryError as exc:
         raise DownloadPersistenceError from exc
 

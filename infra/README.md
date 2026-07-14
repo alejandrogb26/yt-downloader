@@ -31,7 +31,7 @@ No hay autenticación todavía. Limita este servicio a una LAN de confianza medi
 - Entorno virtual backend: `/opt/yt-downloader/backend/.venv`
 - Frontend compilado: `/var/www/yt-downloader`
 - Configuración privada: `/etc/yt-downloader`
-- Perfiles: `/etc/yt-downloader/profiles.json`
+- Perfiles iniciales a importar: `/etc/yt-downloader/profiles.json`
 - Exclusiones de biblioteca: `/etc/yt-downloader/library-exclusions.json`
 - Variables de entorno: `/etc/yt-downloader/yt-downloader.env`
 - Staging local: `/var/lib/yt-downloader/staging`
@@ -70,7 +70,7 @@ sudo install -m 0640 -o root -g yt-downloader /ruta/a/profiles.json /etc/yt-down
 sudo install -m 0640 -o root -g yt-downloader infra/config/library-exclusions.json.example /etc/yt-downloader/library-exclusions.json
 ```
 
-`LIBRARY_EXCLUSIONS_CONFIG_PATH` apunta al JSON de exclusiones de navegador. El formato es `{"excluded_names":["@eaDir"]}`. Los nombres son nombres base exactos, sin rutas ni patrones; si el fichero no existe, la API usa una lista vacía.
+`profiles.json` ya no es fuente runtime. Úsalo solo para importación inicial a MariaDB. `LIBRARY_EXCLUSIONS_CONFIG_PATH` apunta al JSON de exclusiones de navegador. El formato es `{"excluded_names":["@eaDir"]}`. Los nombres son nombres base exactos, sin rutas ni patrones; si el fichero no existe, la API usa una lista vacía.
 
 ## Backend
 
@@ -93,6 +93,16 @@ set -a
 set +a
 sudo -u yt-downloader /usr/local/bin/uv run --frozen --no-sync --project backend alembic -c backend/alembic.ini upgrade head
 ```
+
+Bootstrap inicial de autenticación y perfiles después de migrar:
+
+```bash
+sudo -u yt-downloader /opt/yt-downloader/backend/.venv/bin/python -m yt_downloader_api.admin.import_profiles --profiles-json /etc/yt-downloader/profiles.json
+sudo -u yt-downloader /opt/yt-downloader/backend/.venv/bin/python -m yt_downloader_api.admin.create_user --username admin --display-name Admin --admin --password
+sudo -u yt-downloader /opt/yt-downloader/backend/.venv/bin/python -m yt_downloader_api.admin.grant_profile --username admin --profile alejandrogb --role owner
+```
+
+Repite `grant_profile` para cada biblioteca necesaria. Las sesiones usan cookie `HttpOnly`; en producción `SESSION_COOKIE_SECURE=true` requiere acceso por HTTPS a través del Nginx central. Si haces una prueba directa por HTTP contra Caddy, la cookie segura no se enviará.
 
 Los servicios systemd no usan `uv run` en ejecución normal. Usan directamente los binarios ya instalados en `/opt/yt-downloader/backend/.venv`.
 
@@ -236,7 +246,9 @@ findmnt -T /mnt/music/alejandrogb
 findmnt -T /mnt/music/pepe
 ```
 
-`/api/v1/health` es liveness y solo confirma que FastAPI responde. `/api/v1/health/ready` comprueba MariaDB y configuración de perfiles/exclusiones sin recorrer NFS. Los primeros `curl` se ejecutan desde un cliente LAN y pasan por Nginx central. Los `curl` con `Host` se ejecutan desde el CT para comprobar Caddy directamente sin depender del DNS público interno. Los comandos `findmnt` verifican montajes concretos de perfiles.
+`/api/v1/health` es liveness y solo confirma que FastAPI responde. `/api/v1/health/ready` comprueba MariaDB, tablas de autenticación/perfiles/sesiones y configuración de exclusiones sin recorrer NFS. Los primeros `curl` se ejecutan desde un cliente LAN y pasan por Nginx central. Los `curl` con `Host` se ejecutan desde el CT para comprobar Caddy directamente sin depender del DNS público interno. Los comandos `findmnt` verifican montajes concretos de perfiles.
+
+Rollback seguro de esta fase: restaura el despliegue anterior de backend/frontend y detén API/worker antes de degradar esquema. No borres `profiles.json`; puede volver a importarse. Las cookies de sesión quedan invalidadas si se revierte a una versión sin autenticación.
 
 ## Rollback
 

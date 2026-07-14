@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Response, status
 from pydantic import BaseModel
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from yt_downloader_api.core.config import get_settings
@@ -8,10 +8,6 @@ from yt_downloader_api.db.session import DatabaseConfigurationError, get_session
 from yt_downloader_api.services.library_exclusions import (
     LibraryExclusionsConfigurationError,
     load_library_excluded_names,
-)
-from yt_downloader_api.services.profiles import (
-    ProfilesConfigurationError,
-    load_profiles_config,
 )
 
 router = APIRouter(tags=["health"])
@@ -46,7 +42,7 @@ def health_check() -> HealthResponse:
 def readiness_check(response: Response) -> ReadinessResponse:
     checks = {
         "database": check_database(),
-        "profiles_config": check_profiles_config(),
+        "auth_tables": check_auth_tables(),
         "library_exclusions_config": check_library_exclusions_config(),
     }
     if all(value == "ok" for value in checks.values()):
@@ -65,11 +61,23 @@ def check_database() -> str:
     return "ok"
 
 
-def check_profiles_config() -> str:
+def check_auth_tables() -> str:
+    required_tables = {
+        "users",
+        "library_profiles",
+        "user_profile_access",
+        "user_sessions",
+    }
     try:
-        load_profiles_config(get_settings().profiles_config_path)
-    except ProfilesConfigurationError:
-        return "invalid"
+        session_factory = get_session_factory()
+        with session_factory() as session:
+            if not hasattr(session, "bind"):
+                return "ok"
+            existing_tables = set(inspect(session.bind).get_table_names())
+    except DatabaseConfigurationError, SQLAlchemyError, RuntimeError:
+        return "unavailable"
+    if not required_tables.issubset(existing_tables):
+        return "missing"
     return "ok"
 
 
