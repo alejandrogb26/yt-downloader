@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     session_idle_timeout_seconds: int = 43200
     session_remember_me_timeout_seconds: int = 2592000
     session_token_bytes: int = 32
+    ffmpeg_path: str = "ffmpeg"
+    ffprobe_path: str = "ffprobe"
 
     @field_validator("download_staging_root")
     @classmethod

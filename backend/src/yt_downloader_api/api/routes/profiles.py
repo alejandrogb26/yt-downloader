@@ -9,6 +9,17 @@ from yt_downloader_api.api.dependencies import (
     require_csrf_token,
 )
 from yt_downloader_api.core.config import get_settings
+from yt_downloader_api.services.audio_operations import (
+    AudioOperationFailedError,
+    AudioToolUnavailableError,
+    InvalidAudioMetadataError,
+    InvalidAudioOutputNameError,
+    InvalidAudioPathError,
+    InvalidAudioTimeError,
+    read_audio_metadata,
+    trim_audio_file,
+    update_audio_metadata,
+)
 from yt_downloader_api.services.db_profiles import (
     ProfilePersistenceError,
     get_authorized_profile,
@@ -57,6 +68,14 @@ ENTRY_ALREADY_EXISTS_MESSAGE = "An entry with this name already exists."
 CANNOT_MOVE_DIRECTORY_INTO_ITSELF_MESSAGE = "Cannot move a directory into itself."
 LIBRARY_EXCLUSIONS_UNAVAILABLE_MESSAGE = "Library exclusions configuration is invalid."
 INVALID_SEARCH_QUERY_MESSAGE = "Invalid search query."
+INVALID_AUDIO_PATH_MESSAGE = "El archivo de audio no es válido o no está soportado."
+INVALID_AUDIO_TIME_MESSAGE = "Los tiempos de recorte no son válidos."
+INVALID_AUDIO_OUTPUT_NAME_MESSAGE = "El nombre del nuevo archivo no es válido."
+INVALID_AUDIO_METADATA_MESSAGE = "Los metadatos enviados no son válidos."
+AUDIO_TOOL_UNAVAILABLE_MESSAGE = (
+    "No se pudo editar el audio porque ffmpeg no está disponible en el servidor."
+)
+AUDIO_OPERATION_FAILED_MESSAGE = "No se pudo completar la operación de audio."
 
 
 class PublicProfile(BaseModel):
@@ -117,6 +136,29 @@ class TrashEntryRequest(BaseModel):
 class TrashEntryResponse(BaseModel):
     status: str
     original_path: str
+
+
+class TrimAudioRequest(BaseModel):
+    source_path: str
+    start: str
+    end: str
+    output_filename: str | None = None
+
+
+class AudioMetadataRequest(BaseModel):
+    source_path: str
+    metadata: dict[str, str | None]
+
+
+class AudioMetadataResponse(BaseModel):
+    path: str
+    metadata: dict[str, str]
+
+
+class AudioOperationResponse(BaseModel):
+    path: str
+    name: str
+    operation: str
 
 
 @router.get("/profiles", response_model=ProfilesResponse)
@@ -448,6 +490,183 @@ def trash_profile_entry(
     return TrashEntryResponse(
         status=trashed_entry.status,
         original_path=trashed_entry.original_path,
+    )
+
+
+@router.post("/profiles/{profile_id}/audio/trim", response_model=AudioOperationResponse)
+def trim_profile_audio(
+    profile_id: str,
+    request: TrimAudioRequest,
+    context: Annotated[AuthContext, Depends(require_csrf_token)],
+) -> AudioOperationResponse:
+    profile, excluded_names = load_profile_and_exclusions(context, profile_id, True)
+    settings = get_settings()
+    try:
+        result = trim_audio_file(
+            profile.root_path,
+            request.source_path,
+            request.start,
+            request.end,
+            request.output_filename,
+            excluded_names,
+            settings.ffmpeg_path,
+            settings.ffprobe_path,
+        )
+    except InvalidEntryPathError as exc:
+        raise HTTPException(status_code=422, detail=INVALID_ENTRY_PATH_MESSAGE) from exc
+    except InvalidAudioPathError as exc:
+        raise HTTPException(status_code=422, detail=INVALID_AUDIO_PATH_MESSAGE) from exc
+    except InvalidAudioTimeError as exc:
+        raise HTTPException(status_code=422, detail=INVALID_AUDIO_TIME_MESSAGE) from exc
+    except InvalidAudioOutputNameError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=INVALID_AUDIO_OUTPUT_NAME_MESSAGE,
+        ) from exc
+    except EntryNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ENTRY_NOT_FOUND_MESSAGE,
+        ) from exc
+    except RequestedEntryNotAllowedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=REQUESTED_ENTRY_NOT_ALLOWED_MESSAGE,
+        ) from exc
+    except EntryAlreadyExistsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=ENTRY_ALREADY_EXISTS_MESSAGE,
+        ) from exc
+    except AudioToolUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=AUDIO_TOOL_UNAVAILABLE_MESSAGE,
+        ) from exc
+    except AudioOperationFailedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=AUDIO_OPERATION_FAILED_MESSAGE,
+        ) from exc
+    except ProfileStorageUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PROFILE_STORAGE_UNAVAILABLE_MESSAGE,
+        ) from exc
+    return AudioOperationResponse(
+        path=result.path,
+        name=result.name,
+        operation=result.operation,
+    )
+
+
+@router.get(
+    "/profiles/{profile_id}/audio/metadata",
+    response_model=AudioMetadataResponse,
+)
+def get_profile_audio_metadata(
+    profile_id: str,
+    path: str,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+) -> AudioMetadataResponse:
+    profile, excluded_names = load_profile_and_exclusions(context, profile_id)
+    settings = get_settings()
+    try:
+        metadata = read_audio_metadata(
+            profile.root_path,
+            path,
+            excluded_names,
+            settings.ffprobe_path,
+        )
+    except InvalidEntryPathError as exc:
+        raise HTTPException(status_code=422, detail=INVALID_ENTRY_PATH_MESSAGE) from exc
+    except InvalidAudioPathError as exc:
+        raise HTTPException(status_code=422, detail=INVALID_AUDIO_PATH_MESSAGE) from exc
+    except EntryNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ENTRY_NOT_FOUND_MESSAGE,
+        ) from exc
+    except RequestedEntryNotAllowedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=REQUESTED_ENTRY_NOT_ALLOWED_MESSAGE,
+        ) from exc
+    except AudioToolUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=AUDIO_TOOL_UNAVAILABLE_MESSAGE,
+        ) from exc
+    except AudioOperationFailedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=AUDIO_OPERATION_FAILED_MESSAGE,
+        ) from exc
+    except ProfileStorageUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PROFILE_STORAGE_UNAVAILABLE_MESSAGE,
+        ) from exc
+    return AudioMetadataResponse(path=path, metadata=metadata)
+
+
+@router.patch(
+    "/profiles/{profile_id}/audio/metadata",
+    response_model=AudioOperationResponse,
+)
+def update_profile_audio_metadata(
+    profile_id: str,
+    request: AudioMetadataRequest,
+    context: Annotated[AuthContext, Depends(require_csrf_token)],
+) -> AudioOperationResponse:
+    profile, excluded_names = load_profile_and_exclusions(context, profile_id, True)
+    settings = get_settings()
+    try:
+        result = update_audio_metadata(
+            profile.root_path,
+            request.source_path,
+            request.metadata,
+            excluded_names,
+            settings.ffmpeg_path,
+        )
+    except InvalidEntryPathError as exc:
+        raise HTTPException(status_code=422, detail=INVALID_ENTRY_PATH_MESSAGE) from exc
+    except InvalidAudioPathError as exc:
+        raise HTTPException(status_code=422, detail=INVALID_AUDIO_PATH_MESSAGE) from exc
+    except InvalidAudioMetadataError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=INVALID_AUDIO_METADATA_MESSAGE,
+        ) from exc
+    except EntryNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ENTRY_NOT_FOUND_MESSAGE,
+        ) from exc
+    except RequestedEntryNotAllowedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=REQUESTED_ENTRY_NOT_ALLOWED_MESSAGE,
+        ) from exc
+    except AudioToolUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=AUDIO_TOOL_UNAVAILABLE_MESSAGE,
+        ) from exc
+    except AudioOperationFailedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=AUDIO_OPERATION_FAILED_MESSAGE,
+        ) from exc
+    except ProfileStorageUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PROFILE_STORAGE_UNAVAILABLE_MESSAGE,
+        ) from exc
+    return AudioOperationResponse(
+        path=result.path,
+        name=result.name,
+        operation=result.operation,
     )
 
 

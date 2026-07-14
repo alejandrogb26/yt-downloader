@@ -37,6 +37,7 @@ const rootEntriesResponse = {
   entries: [
     { name: "Rock", path: "Rock", type: "directory", size_bytes: null },
     { name: "tema.mp3", path: "tema.mp3", type: "file", size_bytes: 1200 },
+    { name: "cancion.m4a", path: "cancion.m4a", type: "file", size_bytes: 2400 },
   ],
 };
 
@@ -485,6 +486,56 @@ describe("frontend rediseñado", () => {
     expect(within(screen.getByRole("dialog", { name: "Mover entrada" })).getByRole("button", { name: /Rock \/Rock/ })).toBeDisabled();
   });
 
+  test("muestra acción de audio y envía recorte con CSRF", async () => {
+    const fetchMock = mockApi();
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await user.click(await screen.findByRole("listitem", { name: "Seleccionar cancion.m4a" }));
+    await user.click(screen.getByRole("button", { name: "Acciones..." }));
+    await user.click(screen.getByRole("menuitem", { name: "Editar audio" }));
+
+    expect(await screen.findByRole("dialog", { name: "Editar audio" })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Inicio"), "00:00:30");
+    await user.type(screen.getByLabelText("Fin"), "00:02:10");
+    await user.type(screen.getByLabelText(/Nombre del nuevo archivo/), "cancion recortada");
+    await user.click(screen.getByRole("button", { name: "Crear recorte" }));
+
+    expect(await screen.findByText("Recorte creado correctamente.")).toBeInTheDocument();
+    const trimCall = findFetchCall(fetchMock, "/api/v1/profiles/pepe/audio/trim", "POST");
+    expect((trimCall?.[1]?.headers as Record<string, string>)["X-CSRF-Token"]).toBe("csrf-token");
+    expect(JSON.parse(String(trimCall?.[1]?.body))).toEqual({
+      source_path: "cancion.m4a",
+      start: "00:00:30",
+      end: "00:02:10",
+      output_filename: "cancion recortada",
+    });
+  });
+
+  test("abre metadatos y guarda cambios con CSRF", async () => {
+    const fetchMock = mockApi();
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await user.click(await screen.findByRole("listitem", { name: "Seleccionar cancion.m4a" }));
+    await user.click(screen.getByRole("button", { name: "Acciones..." }));
+    await user.click(screen.getByRole("menuitem", { name: "Editar audio" }));
+
+    expect(await screen.findByDisplayValue("Título viejo")).toBeInTheDocument();
+    await user.clear(screen.getByLabelText("Título"));
+    await user.type(screen.getByLabelText("Título"), "Título nuevo");
+    await user.type(screen.getByLabelText("Artista"), "Artista");
+    await user.click(screen.getByRole("button", { name: "Guardar metadatos" }));
+
+    expect(await screen.findByText("Metadatos guardados correctamente.")).toBeInTheDocument();
+    const metadataCall = findFetchCall(fetchMock, "/api/v1/profiles/pepe/audio/metadata", "PATCH");
+    expect((metadataCall?.[1]?.headers as Record<string, string>)["X-CSRF-Token"]).toBe("csrf-token");
+    expect(JSON.parse(String(metadataCall?.[1]?.body))).toMatchObject({
+      source_path: "cancion.m4a",
+      metadata: { title: "Título nuevo", artist: "Artista" },
+    });
+  });
+
   test("maneja API no disponible con error claro", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       if (String(input).endsWith("/auth/me")) return jsonResponse(authResponse);
@@ -588,6 +639,10 @@ function mockApi(
     renameBody?: unknown;
     moveStatus?: number;
     moveBody?: unknown;
+    trimStatus?: number;
+    trimBody?: unknown;
+    metadataStatus?: number;
+    metadataBody?: unknown;
     searchBody?: unknown;
     previewBody?: unknown;
     batchesBody?: unknown;
@@ -597,6 +652,21 @@ function mockApi(
     const url = String(input);
     if (url.endsWith("/auth/me")) return jsonResponse(authResponse);
     if (url.endsWith("/auth/logout")) return jsonResponse({ status: "ok" });
+    if (url.includes("/profiles/pepe/audio/metadata") && init?.method === "PATCH") {
+      return jsonResponse(
+        options.metadataBody ?? { path: "cancion.m4a", name: "cancion.m4a", operation: "metadata" },
+        options.metadataStatus ?? 200,
+      );
+    }
+    if (url.includes("/profiles/pepe/audio/metadata")) {
+      return jsonResponse({ path: "cancion.m4a", metadata: { title: "Título viejo" } });
+    }
+    if (url.endsWith("/profiles/pepe/audio/trim") && init?.method === "POST") {
+      return jsonResponse(
+        options.trimBody ?? { path: "cancion recortada.m4a", name: "cancion recortada.m4a", operation: "trim" },
+        options.trimStatus ?? 200,
+      );
+    }
     if (url.includes("/profiles/pepe/download-batches/preview")) {
       return jsonResponse(options.previewBody ?? batchPreviewResponse);
     }

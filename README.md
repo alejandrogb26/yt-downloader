@@ -10,7 +10,7 @@
 - MariaDB: base de datos relacional para trabajos de descarga, eventos e historial.
 - Almacenamiento NFS: destino compartido para los archivos descargados.
 
-Actualmente está implementada la base de la API en `backend`, autenticación por cookie HttpOnly, perfiles de biblioteca almacenados en MariaDB, permisos usuario-perfil, navegación de bibliotecas, búsqueda global por perfil, exclusiones de biblioteca, operaciones seguras sobre entradas, la base ORM/Alembic, trabajos individuales, descargas por lote, consulta de trabajos/eventos, un worker persistente concurrente con reintentos controlados para fallos de yt-dlp, un frontend React separado y plantillas de despliegue sin Docker en `infra/`. El frontend permite iniciar/cerrar sesión, crear trabajos, crear lotes, listar la biblioteca, seleccionar destino, crear carpetas, renombrar entradas, mover entradas dentro del perfil y enviar entradas a papelera. No se incluye registro público, recuperación de contraseña ni cancelación.
+Actualmente está implementada la base de la API en `backend`, autenticación por cookie HttpOnly, perfiles de biblioteca almacenados en MariaDB, permisos usuario-perfil, navegación de bibliotecas, búsqueda global por perfil, exclusiones de biblioteca, operaciones seguras sobre entradas, operaciones de audio sin recodificación, la base ORM/Alembic, trabajos individuales, descargas por lote, consulta de trabajos/eventos, un worker persistente concurrente con reintentos controlados para fallos de yt-dlp, un frontend React separado y plantillas de despliegue sin Docker en `infra/`. El frontend permite iniciar/cerrar sesión, crear trabajos, crear lotes, listar la biblioteca, seleccionar destino, crear carpetas, renombrar entradas, mover entradas dentro del perfil, enviar entradas a papelera, recortar archivos `.m4a` existentes y editar metadatos. No se incluye registro público, recuperación de contraseña ni cancelación.
 
 Topología de despliegue prevista en LAN con CT LXC:
 
@@ -46,11 +46,15 @@ La API `POST /api/v1/profiles/{profile_id}/entries/move` permite mover ficheros 
 
 La API `DELETE /api/v1/profiles/{profile_id}/entries` no borra definitivamente. Mueve ficheros y directorios normales a una papelera interna `.trash` dentro de la raíz del perfil. Esa carpeta no se expone en los listados normales ni en el frontend.
 
+La API `POST /api/v1/profiles/{profile_id}/audio/trim` crea un recorte de un `.m4a` existente en la misma carpeta lógica. Usa `ffmpeg` con `-c:a copy`, por lo que no recodifica, no cambia bitrate y no convierte el formato. Al no recodificar, el punto exacto de corte puede ajustarse al frame o paquete de audio más cercano. La salida se escribe primero en un temporal oculto de la misma carpeta y se publica al nombre final solo si el comando termina correctamente y el resultado no está vacío.
+
+La API `PATCH /api/v1/profiles/{profile_id}/audio/metadata` actualiza metadatos permitidos sobre el mismo `.m4a` usando `ffmpeg -c copy`. Escribe primero a un temporal oculto y reemplaza el original solo tras validar la salida. No modifica carátulas, no acepta claves arbitrarias y no cambia extensión ni ubicación. `GET /api/v1/profiles/{profile_id}/audio/metadata` permite leer metadatos permitidos para precargar el formulario.
+
 La API `POST /api/v1/downloads` registra un trabajo de descarga en MariaDB con estado inicial `queued`, pero no descarga desde el proceso HTTP. También se pueden listar trabajos, consultar su detalle y ver sus eventos.
 
 El worker reclama trabajos `queued`, los marca como `running`, consulta el perfil en MariaDB, descarga una única pista de audio con la librería Python `yt-dlp`, publica el fichero final en la biblioteca y termina. Al arrancar también marca como `failed` los trabajos `running` cuyo heartbeat sea demasiado antiguo.
 
-Límites actuales: no hay borrado definitivo, vaciado de papelera, restauración, autenticación, conversión MP3/FLAC, metadatos embebidos, carátulas, playlists ni postprocesado.
+Límites actuales: no hay borrado definitivo, vaciado de papelera, restauración, conversión MP3/FLAC, carátulas, playlists, normalización de volumen, fades ni mezcla de audios.
 
 ## Persistencia
 
@@ -75,7 +79,7 @@ Hay un ejemplo versionable en `config/profiles.example.json`, pero `profiles.jso
 - Node.js compatible con Vite
 - `npm`
 
-`yt-dlp` se instala mediante las dependencias Python del proyecto con el extra `yt-dlp[default]`, que incluye componentes recomendados como `yt-dlp-ejs`. Para la compatibilidad actual de YouTube, el host o CT debe proporcionar un runtime JavaScript externo compatible. En producción se recomienda Deno instalado en una ruta global como `/usr/local/bin/deno`, accesible para el usuario de servicio `yt-downloader`; no lo instales en el home de `root` ni en una ruta privada de usuario. `ffmpeg` y `ffprobe` no son necesarios para esta descarga directa sin conversión, aunque pueden ser necesarios en funciones futuras de postprocesado o compatibilidad.
+`yt-dlp` se instala mediante las dependencias Python del proyecto con el extra `yt-dlp[default]`, que incluye componentes recomendados como `yt-dlp-ejs`. Para la compatibilidad actual de YouTube, el host o CT debe proporcionar un runtime JavaScript externo compatible. En producción se recomienda Deno instalado en una ruta global como `/usr/local/bin/deno`, accesible para el usuario de servicio `yt-downloader`; no lo instales en el home de `root` ni en una ruta privada de usuario. `ffmpeg` y `ffprobe` no se usan para descargar ni convertir, pero sí son necesarios para recortes y metadatos sin recodificación desde Biblioteca. Sus rutas se configuran con `FFMPEG_PATH` y `FFPROBE_PATH`, por defecto `ffmpeg` y `ffprobe`.
 
 `yt-dlp` detecta Deno automáticamente si está disponible en el `PATH` del proceso systemd. La aplicación no configura una ruta específica de runtime JavaScript porque la unidad del worker usa el entorno estándar del sistema y no debe hardcodear rutas del CT.
 

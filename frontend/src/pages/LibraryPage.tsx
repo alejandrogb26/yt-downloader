@@ -4,15 +4,18 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import {
   createDirectory,
+  getAudioMetadata,
   getLibraryEntries,
   getProfiles,
   moveEntry,
   renameEntry,
   searchLibrary,
   trashEntry,
+  trimAudio,
+  updateAudioMetadata,
 } from "../api/client";
 import { getUserErrorMessage } from "../api/errors";
-import type { LibraryEntry } from "../api/types";
+import type { AudioMetadata, LibraryEntry } from "../api/types";
 import { useSelection } from "../app/SelectionContext";
 import { ProfileSelect } from "../components/ProfileSelect";
 import { StatusMessage } from "../components/StatusMessage";
@@ -35,6 +38,11 @@ export function LibraryPage() {
   const [renamingEntry, setRenamingEntry] = useState<LibraryEntry | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [movingEntry, setMovingEntry] = useState<LibraryEntry | null>(null);
+  const [audioEntry, setAudioEntry] = useState<LibraryEntry | null>(null);
+  const [trimStart, setTrimStart] = useState("");
+  const [trimEnd, setTrimEnd] = useState("");
+  const [trimOutputName, setTrimOutputName] = useState("");
+  const [metadataValues, setMetadataValues] = useState<AudioMetadata>({});
   const [moveTargetPath, setMoveTargetPath] = useState("");
   const [searchInput, setSearchInput] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -142,13 +150,67 @@ export function LibraryPage() {
     },
   });
 
+  const trimMutation = useMutation({
+    mutationFn: () => {
+      if (!audioEntry) throw new Error("No hay archivo de audio seleccionado.");
+      return trimAudio(
+        selectedProfileId,
+        audioEntry.path,
+        trimStart.trim(),
+        trimEnd.trim(),
+        trimOutputName.trim() || null,
+      );
+    },
+    onSuccess: async () => {
+      setSuccessMessage("Recorte creado correctamente.");
+      setClientError("");
+      setAudioEntry(null);
+      setTrimStart("");
+      setTrimEnd("");
+      setTrimOutputName("");
+      await queryClient.invalidateQueries({ queryKey: libraryQueryKey });
+    },
+  });
+
+  const metadataMutation = useMutation({
+    mutationFn: () => {
+      if (!audioEntry) throw new Error("No hay archivo de audio seleccionado.");
+      return updateAudioMetadata(selectedProfileId, audioEntry.path, metadataValues);
+    },
+    onSuccess: async () => {
+      setSuccessMessage("Metadatos guardados correctamente.");
+      setClientError("");
+      setAudioEntry(null);
+      await queryClient.invalidateQueries({ queryKey: libraryQueryKey });
+    },
+  });
+
+  const metadataQuery = useQuery({
+    queryKey: ["audio-metadata", selectedProfileId, audioEntry?.path],
+    queryFn: ({ signal }) => getAudioMetadata(selectedProfileId, audioEntry?.path ?? "", signal),
+    enabled: Boolean(selectedProfileId && audioEntry),
+  });
+
+  useEffect(() => {
+    if (metadataQuery.data) {
+      setMetadataValues(metadataQuery.data.metadata);
+    }
+  }, [metadataQuery.data]);
+
   const operationError =
-    createDirectoryMutation.error ?? renameMutation.error ?? trashMutation.error ?? moveMutation.error;
+    createDirectoryMutation.error ??
+    renameMutation.error ??
+    trashMutation.error ??
+    moveMutation.error ??
+    trimMutation.error ??
+    metadataMutation.error;
   const isMutating =
     createDirectoryMutation.isPending ||
     renameMutation.isPending ||
     trashMutation.isPending ||
-    moveMutation.isPending;
+    moveMutation.isPending ||
+    trimMutation.isPending ||
+    metadataMutation.isPending;
   const moveValidationMessage = movingEntry ? getMoveValidationMessage(movingEntry, moveTargetPath) : "";
 
   const openDirectory = (path: string) => {
@@ -319,6 +381,16 @@ export function LibraryPage() {
                 setMovingEntry(selectedEntry);
                 setMoveTargetPath("");
               }}
+              onAudioEdit={() => {
+                if (!selectedEntry) return;
+                setClientError("");
+                setSuccessMessage("");
+                setTrimStart("");
+                setTrimEnd("");
+                setTrimOutputName("");
+                setMetadataValues({});
+                setAudioEntry(selectedEntry);
+              }}
               onTrash={() => {
                 if (!selectedEntry) return;
                 const confirmed = window.confirm(
@@ -448,6 +520,41 @@ export function LibraryPage() {
             setClientError("");
             setSuccessMessage("");
             moveMutation.mutate({ sourcePath: movingEntry.path, targetPath: moveTargetPath });
+          }}
+        />
+      ) : null}
+      {audioEntry ? (
+        <AudioEditDialog
+          entry={audioEntry}
+          trimStart={trimStart}
+          trimEnd={trimEnd}
+          trimOutputName={trimOutputName}
+          metadata={metadataValues}
+          metadataError={metadataQuery.error}
+          isLoadingMetadata={metadataQuery.isLoading}
+          isMutating={isMutating}
+          onTrimStartChange={setTrimStart}
+          onTrimEndChange={setTrimEnd}
+          onTrimOutputNameChange={setTrimOutputName}
+          onMetadataChange={setMetadataValues}
+          onCancel={() => {
+            setAudioEntry(null);
+            setClientError("");
+          }}
+          onTrimConfirm={() => {
+            const validationError = validateTrimForm(trimStart, trimEnd, trimOutputName);
+            if (validationError) {
+              setClientError(validationError);
+              return;
+            }
+            setClientError("");
+            setSuccessMessage("");
+            trimMutation.mutate();
+          }}
+          onMetadataConfirm={() => {
+            setClientError("");
+            setSuccessMessage("");
+            metadataMutation.mutate();
           }}
         />
       ) : null}
@@ -654,6 +761,7 @@ function ActionMenu({
   onOpen,
   onRename,
   onMove,
+  onAudioEdit,
   onTrash,
 }: {
   entry: LibraryEntry | null;
@@ -661,6 +769,7 @@ function ActionMenu({
   onOpen: () => void;
   onRename: () => void;
   onMove: () => void;
+  onAudioEdit: () => void;
   onTrash: () => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -710,11 +819,107 @@ function ActionMenu({
           ) : null}
           <button type="button" role="menuitem" onClick={() => run(onRename)}>Renombrar</button>
           <button type="button" role="menuitem" onClick={() => run(onMove)}>Mover</button>
+          {isSupportedAudioEntry(entry) ? (
+            <button type="button" role="menuitem" onClick={() => run(onAudioEdit)}>Editar audio</button>
+          ) : null}
           <button type="button" role="menuitem" className="danger-item" onClick={() => run(onTrash)}>
             Enviar a papelera
           </button>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function AudioEditDialog({
+  entry,
+  trimStart,
+  trimEnd,
+  trimOutputName,
+  metadata,
+  metadataError,
+  isLoadingMetadata,
+  isMutating,
+  onTrimStartChange,
+  onTrimEndChange,
+  onTrimOutputNameChange,
+  onMetadataChange,
+  onCancel,
+  onTrimConfirm,
+  onMetadataConfirm,
+}: {
+  entry: LibraryEntry;
+  trimStart: string;
+  trimEnd: string;
+  trimOutputName: string;
+  metadata: AudioMetadata;
+  metadataError: unknown;
+  isLoadingMetadata: boolean;
+  isMutating: boolean;
+  onTrimStartChange: (value: string) => void;
+  onTrimEndChange: (value: string) => void;
+  onTrimOutputNameChange: (value: string) => void;
+  onMetadataChange: (value: AudioMetadata) => void;
+  onCancel: () => void;
+  onTrimConfirm: () => void;
+  onMetadataConfirm: () => void;
+}) {
+  const updateMetadataField = (key: keyof AudioMetadata, value: string) => {
+    onMetadataChange({ ...metadata, [key]: value });
+  };
+
+  return (
+    <div className="dialog-backdrop">
+      <div className="dialog-panel audio-dialog" role="dialog" aria-modal="true" aria-labelledby="audio-dialog-heading">
+        <div>
+          <p className="eyebrow">Archivo de audio</p>
+          <h3 id="audio-dialog-heading">Editar audio</h3>
+          <p className="muted">{entry.name}</p>
+        </div>
+        <section className="audio-dialog-section" aria-labelledby="trim-heading">
+          <div>
+            <h4 id="trim-heading">Recortar</h4>
+            <p className="muted">El recorte se hace sin recodificar. El corte puede ajustarse al frame de audio más cercano.</p>
+          </div>
+          <div className="audio-form-grid">
+            <Field label="Inicio">
+              <TextInput value={trimStart} onChange={(event) => onTrimStartChange(event.target.value)} placeholder="00:00:30" />
+            </Field>
+            <Field label="Fin">
+              <TextInput value={trimEnd} onChange={(event) => onTrimEndChange(event.target.value)} placeholder="00:02:10" />
+            </Field>
+            <Field label="Nombre del nuevo archivo" hint="Sin extensión. Se creará en la misma carpeta.">
+              <TextInput value={trimOutputName} onChange={(event) => onTrimOutputNameChange(event.target.value)} placeholder={`${entry.name.replace(/\.m4a$/i, "")} - recorte`} />
+            </Field>
+          </div>
+          <div className="dialog-actions">
+            <Button type="button" disabled={isMutating} onClick={onTrimConfirm}>{isMutating ? "Creando..." : "Crear recorte"}</Button>
+          </div>
+        </section>
+        <section className="audio-dialog-section" aria-labelledby="metadata-heading">
+          <div>
+            <h4 id="metadata-heading">Metadatos</h4>
+            <p className="muted">Se guardan con copia de streams, sin cambiar el audio.</p>
+          </div>
+          {isLoadingMetadata ? <Skeleton label="Cargando metadatos" /> : null}
+          {metadataError ? <StatusMessage tone="error">No se pudieron cargar los metadatos actuales.</StatusMessage> : null}
+          <div className="audio-form-grid">
+            <Field label="Título"><TextInput value={metadata.title ?? ""} onChange={(event) => updateMetadataField("title", event.target.value)} /></Field>
+            <Field label="Artista"><TextInput value={metadata.artist ?? ""} onChange={(event) => updateMetadataField("artist", event.target.value)} /></Field>
+            <Field label="Álbum"><TextInput value={metadata.album ?? ""} onChange={(event) => updateMetadataField("album", event.target.value)} /></Field>
+            <Field label="Artista del álbum"><TextInput value={metadata.album_artist ?? ""} onChange={(event) => updateMetadataField("album_artist", event.target.value)} /></Field>
+            <Field label="Género"><TextInput value={metadata.genre ?? ""} onChange={(event) => updateMetadataField("genre", event.target.value)} /></Field>
+            <Field label="Año/fecha"><TextInput value={metadata.date ?? ""} onChange={(event) => updateMetadataField("date", event.target.value)} /></Field>
+            <Field label="Pista"><TextInput value={metadata.track ?? ""} onChange={(event) => updateMetadataField("track", event.target.value)} /></Field>
+          </div>
+          <div className="dialog-actions">
+            <Button type="button" disabled={isMutating} onClick={onMetadataConfirm}>{isMutating ? "Guardando..." : "Guardar metadatos"}</Button>
+          </div>
+        </section>
+        <div className="dialog-actions">
+          <Button type="button" variant="secondary" disabled={isMutating} onClick={onCancel}>Cerrar</Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -845,6 +1050,16 @@ function validateEntryName(value: string): string {
   if (name.includes("/") || name.includes("\\")) return "El nombre no puede contener separadores de ruta.";
   if (name === "." || name === ".." || name.startsWith(".")) return "El nombre no puede ser oculto ni reservado.";
   return "";
+}
+
+function validateTrimForm(start: string, end: string, outputName: string): string {
+  if (!start.trim() || !end.trim()) return "Indica inicio y fin del recorte.";
+  if (outputName.trim()) return validateEntryName(outputName);
+  return "";
+}
+
+function isSupportedAudioEntry(entry: LibraryEntry): boolean {
+  return entry.type === "file" && entry.name.toLowerCase().endsWith(".m4a");
 }
 
 function getMoveValidationMessage(entry: LibraryEntry, targetPath: string): string {

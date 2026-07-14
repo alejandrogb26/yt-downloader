@@ -22,7 +22,7 @@ El DNS interno `music.alejandrogb.local` debe resolver al Nginx central, no al C
 
 Caddy en el CT no usa certificados ni claves privadas. FastAPI escucha solo en `127.0.0.1:8080`. El firewall del CT debe permitir TCP `8081` únicamente desde `IP_NGINX`.
 
-No hay autenticación todavía. Limita este servicio a una LAN de confianza mediante firewall y no expongas `443` a Internet.
+Aunque la aplicación usa autenticación con cookie HttpOnly, limita este servicio a una LAN de confianza mediante firewall y no expongas `443` a Internet sin endurecimiento adicional.
 
 ## Rutas
 
@@ -77,6 +77,17 @@ sudo install -m 0640 -o root -g yt-downloader infra/config/library-exclusions.js
 Verifica la ruta de `uv` antes de instalar dependencias. Verifica también que Python del entorno virtual sea 3.14.
 
 El paquete Python se bloquea con `yt-dlp[default]`, que incluye dependencias recomendadas como `yt-dlp-ejs`. Para YouTube, el CT debe proporcionar además un runtime JavaScript externo compatible. Instala Deno de forma global, por ejemplo en `/usr/local/bin/deno`, y asegúrate de que el usuario de servicio `yt-downloader` puede ejecutarlo. No lo instales en el home de `root` ni dependas de rutas privadas de usuario.
+
+Las operaciones manuales de Biblioteca para recortar `.m4a` y editar metadatos requieren `ffmpeg` y `ffprobe` instalados en el CT. No se usan para convertir descargas ni recodificar audio: los comandos se ejecutan con copia de streams (`-c:a copy` o `-c copy`). Las rutas se configuran con `FFMPEG_PATH` y `FFPROBE_PATH`, por defecto `ffmpeg` y `ffprobe` desde el `PATH` del servicio.
+
+Instalación/verificación orientativa:
+
+```bash
+apt update
+apt install -y ffmpeg
+ffmpeg -version
+ffprobe -version
+```
 
 Instalar dependencias bloqueadas:
 

@@ -19,6 +19,9 @@ import type {
   TrashEntryRequest,
   TrashedEntry,
   AuthResponse,
+  AudioMetadata,
+  AudioMetadataResponse,
+  AudioOperationResponse,
 } from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
@@ -136,6 +139,55 @@ export async function moveEntry(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+export async function trimAudio(
+  profileId: string,
+  sourcePath: string,
+  start: string,
+  end: string,
+  outputFilename: string | null,
+): Promise<AudioOperationResponse> {
+  return requestJson<AudioOperationResponse>(
+    `/profiles/${encodeURIComponent(profileId)}/audio/trim`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        source_path: sourcePath,
+        start,
+        end,
+        output_filename: outputFilename,
+      }),
+    },
+  );
+}
+
+export async function getAudioMetadata(
+  profileId: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<AudioMetadataResponse> {
+  const params = new URLSearchParams({ path });
+  return requestJson<AudioMetadataResponse>(
+    `/profiles/${encodeURIComponent(profileId)}/audio/metadata?${params.toString()}`,
+    { signal },
+  );
+}
+
+export async function updateAudioMetadata(
+  profileId: string,
+  sourcePath: string,
+  metadata: AudioMetadata,
+): Promise<AudioOperationResponse> {
+  return requestJson<AudioOperationResponse>(
+    `/profiles/${encodeURIComponent(profileId)}/audio/metadata`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_path: sourcePath, metadata }),
+    },
+  );
 }
 
 export async function createDownloadJob(

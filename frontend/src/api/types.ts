@@ -115,6 +115,39 @@ export type MoveEntryRequest = {
   target_directory_path: string;
 };
 
+export type TrimAudioRequest = {
+  source_path: string;
+  start: string;
+  end: string;
+  output_filename?: string | null;
+};
+
+export type AudioMetadata = {
+  title?: string | null;
+  artist?: string | null;
+  album?: string | null;
+  album_artist?: string | null;
+  genre?: string | null;
+  date?: string | null;
+  track?: string | null;
+};
+
+export type UpdateAudioMetadataRequest = {
+  source_path: string;
+  metadata: AudioMetadata;
+};
+
+export type AudioMetadataResponse = {
+  path: string;
+  metadata: Record<string, string>;
+};
+
+export type AudioOperationResponse = {
+  path: string;
+  name: string;
+  operation: "trim" | "metadata";
+};
+
 export type DownloadStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export type DownloadJobListItem = {

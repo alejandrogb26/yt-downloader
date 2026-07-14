@@ -5,7 +5,7 @@
 ## Componentes previstos
 
 - Frontend: aplicación React/Vite separada para seleccionar perfiles, navegar y gestionar operaciones básicas de biblioteca, elegir destino, crear trabajos y consultar estados.
-- Backend: API FastAPI con Pydantic v2. Actualmente incluye autenticación con cookie HttpOnly, `GET /api/v1/health`, `GET /api/v1/profiles`, navegación con `GET /api/v1/profiles/{profile_id}/entries`, creación de directorios con `POST /api/v1/profiles/{profile_id}/directories`, renombrado con `PATCH /api/v1/profiles/{profile_id}/entries/rename`, movimiento con `POST /api/v1/profiles/{profile_id}/entries/move`, envío a papelera con `DELETE /api/v1/profiles/{profile_id}/entries` y endpoints para crear y consultar trabajos de descarga.
+- Backend: API FastAPI con Pydantic v2. Actualmente incluye autenticación con cookie HttpOnly, `GET /api/v1/health`, `GET /api/v1/profiles`, navegación con `GET /api/v1/profiles/{profile_id}/entries`, creación de directorios con `POST /api/v1/profiles/{profile_id}/directories`, renombrado con `PATCH /api/v1/profiles/{profile_id}/entries/rename`, movimiento con `POST /api/v1/profiles/{profile_id}/entries/move`, envío a papelera con `DELETE /api/v1/profiles/{profile_id}/entries`, operaciones de audio sin recodificación bajo `/api/v1/profiles/{profile_id}/audio/*` y endpoints para crear y consultar trabajos de descarga.
 - Worker de descargas: proceso independiente persistente y concurrente para reclamar trabajos de MariaDB, descargar pistas de audio con `yt-dlp`, publicar resultados en NFS y finalizar estados. Conserva `--once` solo como modo manual o de diagnóstico.
 - MariaDB: base de datos para trabajos de descarga, eventos, estados e historial. La capa ORM y las migraciones iniciales ya están preparadas.
 - Almacenamiento NFS: ubicaciones compartidas por perfil para archivos descargados.
@@ -48,7 +48,7 @@ Caddy también publica las rutas de documentación automáticas de FastAPI bajo 
 
 El firewall del CT debe permitir TCP `8081` exclusivamente desde el Nginx central. Caddy debe confiar solo en la IP del Nginx central como proxy. Los certificados y claves pertenecen al Nginx central y no deben versionarse ni copiarse al repositorio.
 
-No hay autenticación todavía. Antes de exponer el servicio fuera de una LAN de confianza harán falta autenticación, revisión de firewall, política TLS pública si procede y endurecimiento operativo adicional.
+Hay autenticación con sesiones por cookie HttpOnly y CSRF para mutaciones. Antes de exponer el servicio fuera de una LAN de confianza harán falta revisión de firewall, política TLS pública si procede y endurecimiento operativo adicional.
 
 ```text
 Frontend Biblioteca
@@ -57,7 +57,8 @@ Frontend Biblioteca
   ├── crear carpetas
   ├── renombrar entradas
   ├── mover dentro del perfil
-  └── enviar a papelera
+  ├── enviar a papelera
+  └── recortar o editar metadatos de .m4a sin recodificar
 ```
 
 ## Perfiles de biblioteca
@@ -99,6 +100,16 @@ La eliminación actual no borra definitivamente. Mueve la entrada a `.trash` den
 
 El sistema de archivos NFS será la fuente de verdad de las bibliotecas. Todavía no hay borrado definitivo, vaciado de papelera ni restauración.
 
+## Operaciones de audio
+
+La Biblioteca permite operar sobre archivos `.m4a` existentes dentro de perfiles autorizados. Estas operaciones no pasan por la cola del worker, no crean trabajos de descarga y no cambian la política de `yt-dlp`.
+
+El recorte usa `ffmpeg` con `-c:a copy`; la edición de metadatos usa `ffmpeg` con `-c copy`. No se configuran codecs de salida como `aac`, `libmp3lame` u `opus`, por lo que no hay recodificación, conversión a MP3, cambio de bitrate, normalización, fades ni mezcla. El recorte sin recodificación puede quedar ajustado a límites de frame o paquete y no promete exactitud al milisegundo.
+
+Las rutas `FFMPEG_PATH` y `FFPROBE_PATH` permiten fijar los binarios. Por defecto se ejecutan `ffmpeg` y `ffprobe` desde el `PATH` del proceso. Si no están disponibles o fallan, la API devuelve errores públicos en español sin stderr, trazas ni rutas internas.
+
+Las operaciones reutilizan la validación de rutas de Biblioteca: usuario autenticado, acceso al perfil, rutas relativas, sin `..`, sin componentes ocultos, sin symlinks y respetando exclusiones. Las mutaciones requieren CSRF. Las escrituras se hacen en temporales ocultos dentro de la misma carpeta NFS y solo se publican si `ffmpeg` termina correctamente y el resultado no está vacío.
+
 ## Persistencia y flujo futuro
 
 La API FastAPI usa MariaDB para usuarios, sesiones, perfiles, permisos, trabajos de descarga y eventos. El worker persistente también usa MariaDB para tomar trabajos, cargar perfiles, actualizar progreso, mantener heartbeat, registrar eventos y cerrar estados.
@@ -132,7 +143,7 @@ Cliente -> FastAPI -> MariaDB
           consulta de cola e historial
 ```
 
-La API solo registra el trabajo en cola. No ejecuta yt-dlp, FFmpeg ni procesos externos.
+La API solo registra el trabajo en cola. No ejecuta yt-dlp para descargas ni usa el worker para operaciones de audio. Las operaciones manuales de Biblioteca sí pueden ejecutar `ffmpeg`/`ffprobe` de forma síncrona para copia de streams sin recodificación.
 
 Flujo actual del worker persistente:
 
