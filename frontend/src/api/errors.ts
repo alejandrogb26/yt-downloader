@@ -33,6 +33,24 @@ const ERROR_TRANSLATIONS = new Map<string, string>([
   ["An entry with this name already exists.", "Ya existe una entrada con ese nombre."],
   ["Cannot move a directory into itself.", "No se puede mover una carpeta dentro de sí misma."],
   ["Download job not found.", "No se ha encontrado el trabajo de descarga."],
+  [
+    "La solicitud enviada a la API no es válida. Revisa los datos del formulario.",
+    "La solicitud enviada a la API no es válida. Revisa los datos del formulario.",
+  ],
+  ["Los tiempos de recorte no son válidos.", "Los tiempos de recorte no son válidos."],
+  [
+    "El nombre del nuevo archivo no es válido.",
+    "El nombre del nuevo archivo no es válido.",
+  ],
+  [
+    "El archivo de audio no es válido o no está soportado.",
+    "El archivo de audio no es válido o no está soportado.",
+  ],
+  [
+    "No se pudo editar el audio porque ffmpeg no está disponible en el servidor.",
+    "No se pudo editar el audio porque ffmpeg no está disponible en el servidor.",
+  ],
+  ["No se pudo completar la operación de audio.", "No se pudo completar la operación de audio."],
 ]);
 
 export function getUserErrorMessage(error: unknown): string {

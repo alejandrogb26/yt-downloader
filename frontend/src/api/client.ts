@@ -16,6 +16,7 @@ import type {
   MoveEntryRequest,
   ProfilesResponse,
   RenameEntryRequest,
+  TrimAudioRequest,
   TrashEntryRequest,
   TrashedEntry,
   AuthResponse,
@@ -148,17 +149,18 @@ export async function trimAudio(
   end: string,
   outputFilename: string | null,
 ): Promise<AudioOperationResponse> {
+  const body: TrimAudioRequest = {
+    source_path: sourcePath,
+    start,
+    end,
+    output_filename: outputFilename,
+  };
   return requestJson<AudioOperationResponse>(
     `/profiles/${encodeURIComponent(profileId)}/audio/trim`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        source_path: sourcePath,
-        start,
-        end,
-        output_filename: outputFilename,
-      }),
+      body: JSON.stringify(body),
     },
   );
 }
@@ -304,6 +306,14 @@ function readErrorDetail(data: unknown): string {
     data.detail.trim()
   ) {
     return data.detail;
+  }
+  if (
+    data !== null &&
+    typeof data === "object" &&
+    "detail" in data &&
+    Array.isArray(data.detail)
+  ) {
+    return "La solicitud enviada a la API no es válida. Revisa los datos del formulario.";
   }
   return "La API no pudo completar la operación.";
 }

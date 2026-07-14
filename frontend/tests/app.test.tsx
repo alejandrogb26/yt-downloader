@@ -38,6 +38,7 @@ const rootEntriesResponse = {
     { name: "Rock", path: "Rock", type: "directory", size_bytes: null },
     { name: "tema.mp3", path: "tema.mp3", type: "file", size_bytes: 1200 },
     { name: "cancion.m4a", path: "cancion.m4a", type: "file", size_bytes: 2400 },
+    { name: "Alerta Roja.m4a", path: "El Disco Duro/Alerta Roja.m4a", type: "file", size_bytes: 3600 },
   ],
 };
 
@@ -491,25 +492,42 @@ describe("frontend rediseñado", () => {
     const user = userEvent.setup();
     renderApp(["/library?profile=pepe"]);
 
-    await user.click(await screen.findByRole("listitem", { name: "Seleccionar cancion.m4a" }));
+    await user.click(await screen.findByRole("listitem", { name: "Seleccionar Alerta Roja.m4a" }));
     await user.click(screen.getByRole("button", { name: "Acciones..." }));
     await user.click(screen.getByRole("menuitem", { name: "Editar audio" }));
 
     expect(await screen.findByRole("dialog", { name: "Editar audio" })).toBeInTheDocument();
     await user.type(screen.getByLabelText("Inicio"), "00:00:30");
     await user.type(screen.getByLabelText("Fin"), "00:02:10");
-    await user.type(screen.getByLabelText(/Nombre del nuevo archivo/), "cancion recortada");
+    await user.type(screen.getByLabelText(/Nombre del nuevo archivo/), "Alerta Roja recorte");
     await user.click(screen.getByRole("button", { name: "Crear recorte" }));
 
     expect(await screen.findByText("Recorte creado correctamente.")).toBeInTheDocument();
     const trimCall = findFetchCall(fetchMock, "/api/v1/profiles/pepe/audio/trim", "POST");
     expect((trimCall?.[1]?.headers as Record<string, string>)["X-CSRF-Token"]).toBe("csrf-token");
     expect(JSON.parse(String(trimCall?.[1]?.body))).toEqual({
-      source_path: "cancion.m4a",
+      source_path: "El Disco Duro/Alerta Roja.m4a",
       start: "00:00:30",
       end: "00:02:10",
-      output_filename: "cancion recortada",
+      output_filename: "Alerta Roja recorte",
     });
+  });
+
+  test("muestra error claro si el recorte devuelve 422 de validación", async () => {
+    mockApi({ trimStatus: 422, trimBody: { detail: [{ msg: "Field required" }] } });
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await user.click(await screen.findByRole("listitem", { name: "Seleccionar cancion.m4a" }));
+    await user.click(screen.getByRole("button", { name: "Acciones..." }));
+    await user.click(screen.getByRole("menuitem", { name: "Editar audio" }));
+    await user.type(await screen.findByLabelText("Inicio"), "00:00:10");
+    await user.type(screen.getByLabelText("Fin"), "00:00:30");
+    await user.click(screen.getByRole("button", { name: "Crear recorte" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "La solicitud enviada a la API no es válida. Revisa los datos del formulario.",
+    );
   });
 
   test("abre metadatos y guarda cambios con CSRF", async () => {
