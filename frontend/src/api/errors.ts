@@ -55,7 +55,8 @@ const ERROR_TRANSLATIONS = new Map<string, string>([
 
 export function getUserErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
-    return ERROR_TRANSLATIONS.get(error.message) ?? FALLBACK_ERROR_MESSAGE;
+    if (error.status === null) return FALLBACK_ERROR_MESSAGE;
+    return ERROR_TRANSLATIONS.get(error.message) ?? error.message;
   }
   return FALLBACK_ERROR_MESSAGE;
 }

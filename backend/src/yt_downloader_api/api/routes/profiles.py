@@ -1,3 +1,5 @@
+import logging
+import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -51,6 +53,7 @@ from yt_downloader_api.services.library_exclusions import (
 )
 
 router = APIRouter(tags=["profiles"])
+logger = logging.getLogger(__name__)
 
 PROFILES_UNAVAILABLE_MESSAGE = "Profiles configuration is unavailable."
 PROFILE_NOT_FOUND_MESSAGE = "Profile not found."
@@ -544,8 +547,17 @@ def trim_profile_audio(
             detail=AUDIO_TOOL_UNAVAILABLE_MESSAGE,
         ) from exc
     except AudioOperationFailedError as exc:
+        log_audio_operation_failure(
+            operation="trim",
+            profile_id=profile_id,
+            source_path=request.source_path,
+            start=request.start,
+            end=request.end,
+            output_filename=request.output_filename,
+            exc=exc,
+        )
         raise HTTPException(
-            status_code=422,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=AUDIO_OPERATION_FAILED_MESSAGE,
         ) from exc
     except ProfileStorageUnavailableError as exc:
@@ -599,7 +611,7 @@ def get_profile_audio_metadata(
         ) from exc
     except AudioOperationFailedError as exc:
         raise HTTPException(
-            status_code=422,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=AUDIO_OPERATION_FAILED_MESSAGE,
         ) from exc
     except ProfileStorageUnavailableError as exc:
@@ -654,8 +666,17 @@ def update_profile_audio_metadata(
             detail=AUDIO_TOOL_UNAVAILABLE_MESSAGE,
         ) from exc
     except AudioOperationFailedError as exc:
+        log_audio_operation_failure(
+            operation="metadata",
+            profile_id=profile_id,
+            source_path=request.source_path,
+            start=None,
+            end=None,
+            output_filename=None,
+            exc=exc,
+        )
         raise HTTPException(
-            status_code=422,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=AUDIO_OPERATION_FAILED_MESSAGE,
         ) from exc
     except ProfileStorageUnavailableError as exc:
@@ -703,3 +724,34 @@ def load_profile_and_exclusions(
             detail=PROFILE_NOT_FOUND_MESSAGE,
         )
     return profile, excluded_names
+
+
+def log_audio_operation_failure(
+    *,
+    operation: str,
+    profile_id: str,
+    source_path: str,
+    start: str | None,
+    end: str | None,
+    output_filename: str | None,
+    exc: AudioOperationFailedError,
+) -> None:
+    logger.warning(
+        "audio operation failed operation=%s profile_id=%s source_path=%s "
+        "start=%s end=%s output_filename=%s returncode=%s stderr_summary=%s",
+        operation,
+        profile_id,
+        source_path,
+        start,
+        end,
+        output_filename,
+        exc.returncode,
+        sanitize_log_text(exc.stderr),
+    )
+
+
+def sanitize_log_text(value: str, limit: int = 500) -> str:
+    sanitized = re.sub(r"/[^\s'\"]+", "[path]", value).strip()
+    if len(sanitized) > limit:
+        return f"{sanitized[:limit]}..."
+    return sanitized

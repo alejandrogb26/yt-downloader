@@ -530,6 +530,23 @@ describe("frontend rediseñado", () => {
     );
   });
 
+  test("muestra el detail concreto del backend si falla el recorte", async () => {
+    mockApi({ trimStatus: 500, trimBody: { detail: "No se pudo completar la operación de audio." } });
+    const user = userEvent.setup();
+    renderApp(["/library?profile=pepe"]);
+
+    await user.click(await screen.findByRole("listitem", { name: "Seleccionar cancion.m4a" }));
+    await user.click(screen.getByRole("button", { name: "Acciones..." }));
+    await user.click(screen.getByRole("menuitem", { name: "Editar audio" }));
+    await user.type(await screen.findByLabelText("Inicio"), "00:00:10");
+    await user.type(screen.getByLabelText("Fin"), "00:00:30");
+    await user.click(screen.getByRole("button", { name: "Crear recorte" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "No se pudo completar la operación de audio.",
+    );
+  });
+
   test("abre metadatos y guarda cambios con CSRF", async () => {
     const fetchMock = mockApi();
     const user = userEvent.setup();

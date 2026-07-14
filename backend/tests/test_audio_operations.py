@@ -1,4 +1,5 @@
 import json
+import logging
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
@@ -69,10 +70,19 @@ def make_audio_file(root: Path, relative_path: str = "Rock/song.m4a") -> Path:
     return target
 
 
-def fake_subprocess_run(calls: list[list[str]], fail_ffmpeg: bool = False):
+def fake_subprocess_run(
+    calls: list[list[str]],
+    fail_ffmpeg: bool = False,
+    fail_ffprobe_duration: bool = False,
+):
     def run(command: list[str], **_kwargs: Any):
         calls.append(command)
         if command[0] == "ffprobe" and "format=duration" in command:
+            if fail_ffprobe_duration:
+                return FakeCompleted(
+                    returncode=1,
+                    stderr="duration read failed /mnt/music/private",
+                )
             return FakeCompleted(stdout="180.0\n")
         if command[0] == "ffprobe" and "format_tags" in command:
             return FakeCompleted(
@@ -82,7 +92,10 @@ def fake_subprocess_run(calls: list[list[str]], fail_ffmpeg: bool = False):
             output_path = Path(command[-1])
             if fail_ffmpeg:
                 output_path.write_bytes(b"partial")
-                return FakeCompleted(returncode=1)
+                return FakeCompleted(
+                    returncode=1,
+                    stderr="ffmpeg failed /mnt/music/pepe/Rock/song.m4a full stderr",
+                )
             output_path.write_bytes(b"edited-audio")
             return FakeCompleted()
         return FakeCompleted(returncode=1)
@@ -91,10 +104,15 @@ def fake_subprocess_run(calls: list[list[str]], fail_ffmpeg: bool = False):
 
 
 class FakeCompleted:
-    def __init__(self, returncode: int = 0, stdout: str = "") -> None:
+    def __init__(
+        self,
+        returncode: int = 0,
+        stdout: str = "",
+        stderr: str = "private stderr",
+    ) -> None:
         self.returncode = returncode
         self.stdout = stdout
-        self.stderr = "private stderr"
+        self.stderr = stderr
 
 
 @pytest.mark.anyio
@@ -134,6 +152,42 @@ async def test_trim_audio_uses_copy_and_creates_output_without_overwrite(
     assert "-c:a" in ffmpeg_call
     assert ffmpeg_call[ffmpeg_call.index("-c:a") + 1] == "copy"
     assert not any(codec in ffmpeg_call for codec in ["aac", "libmp3lame", "opus"])
+    assert Path(ffmpeg_call[-1]).suffix == ".m4a"
+
+
+@pytest.mark.anyio
+async def test_trim_accepts_output_name_with_spaces_and_hyphen(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "library"
+    make_audio_file(root, "El Disco Duro/Alerta Roja.m4a")
+    configure_profiles(monkeypatch, tmp_path, root)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "yt_downloader_api.services.audio_operations.subprocess.run",
+        fake_subprocess_run(calls),
+    )
+
+    response = await client.post(
+        "/api/v1/profiles/pepe/audio/trim",
+        json={
+            "source_path": "El Disco Duro/Alerta Roja.m4a",
+            "start": "00:00:11",
+            "end": "00:00:30",
+            "output_filename": "Alerta Roja - Recorte",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "path": "El Disco Duro/Alerta Roja - Recorte.m4a",
+        "name": "Alerta Roja - Recorte.m4a",
+        "operation": "trim",
+    }
+    ffmpeg_call = next(call for call in calls if call[0] == "ffmpeg")
+    assert ffmpeg_call[-1].endswith(".m4a")
 
 
 @pytest.mark.anyio
@@ -219,6 +273,7 @@ async def test_trim_ffmpeg_failure_is_safe_and_cleans_temporary(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     root = tmp_path / "library"
     source = make_audio_file(root)
@@ -227,17 +282,80 @@ async def test_trim_ffmpeg_failure_is_safe_and_cleans_temporary(
         "yt_downloader_api.services.audio_operations.subprocess.run",
         fake_subprocess_run([], fail_ffmpeg=True),
     )
+    caplog.set_level(logging.WARNING)
 
     response = await client.post(
         "/api/v1/profiles/pepe/audio/trim",
         json={"source_path": "Rock/song.m4a", "start": "0", "end": "10"},
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 500
     assert response.json() == {"detail": "No se pudo completar la operación de audio."}
     assert source.read_bytes() == b"original-audio"
     assert list((root / "Rock").glob(".yt-downloader-*")) == []
-    assert "private stderr" not in response.text
+    assert "full stderr" not in response.text
+    assert "audio operation failed" in caplog.text
+    assert "operation" in caplog.text
+    assert "trim" in caplog.text
+    assert "pepe" in caplog.text
+    assert "Rock/song.m4a" in caplog.text
+    assert "/mnt/music" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_trim_ffmpeg_unavailable_returns_safe_503(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "library"
+    make_audio_file(root)
+    configure_profiles(monkeypatch, tmp_path, root)
+
+    def raise_missing(_command: list[str], **_kwargs: Any):
+        raise FileNotFoundError("ffmpeg missing")
+
+    monkeypatch.setattr(
+        "yt_downloader_api.services.audio_operations.subprocess.run",
+        raise_missing,
+    )
+
+    response = await client.post(
+        "/api/v1/profiles/pepe/audio/trim",
+        json={"source_path": "Rock/song.m4a", "start": "0", "end": "10"},
+    )
+
+    assert response.status_code == 503
+    expected_detail = (
+        "No se pudo editar el audio porque ffmpeg no está disponible en el servidor."
+    )
+    assert response.json() == {"detail": expected_detail}
+
+
+@pytest.mark.anyio
+async def test_trim_continues_when_ffprobe_duration_fails(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    root = tmp_path / "library"
+    make_audio_file(root)
+    configure_profiles(monkeypatch, tmp_path, root)
+    monkeypatch.setattr(
+        "yt_downloader_api.services.audio_operations.subprocess.run",
+        fake_subprocess_run([], fail_ffprobe_duration=True),
+    )
+    caplog.set_level(logging.WARNING)
+
+    response = await client.post(
+        "/api/v1/profiles/pepe/audio/trim",
+        json={"source_path": "Rock/song.m4a", "start": "0", "end": "10"},
+    )
+
+    assert response.status_code == 200
+    assert "ffprobe could not read audio duration" in caplog.text
+    assert "/mnt/music" not in caplog.text
 
 
 @pytest.mark.anyio

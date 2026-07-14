@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import subprocess
@@ -30,6 +31,7 @@ TIME_PATTERN = re.compile(
     r"^(?:(?P<hours>\d{1,2}):)?(?:(?P<minutes>\d{1,2}):)?(?P<seconds>\d{1,2}(?:\.\d{1,3})?)$"
 )
 DURATION_TOLERANCE_SECONDS = 0.5
+logger = logging.getLogger(__name__)
 
 
 class InvalidAudioPathError(Exception):
@@ -54,6 +56,11 @@ class AudioToolUnavailableError(Exception):
 
 class AudioOperationFailedError(Exception):
     """Raised when ffmpeg fails or produces an invalid result."""
+
+    def __init__(self, returncode: int | None = None, stderr: str = "") -> None:
+        super().__init__()
+        self.returncode = returncode
+        self.stderr = stderr
 
 
 @dataclass(frozen=True)
@@ -184,7 +191,11 @@ def read_audio_metadata(
             timeout=30,
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
-        raise AudioToolUnavailableError from exc
+        logger.warning(
+            "ffprobe could not read audio duration",
+            extra={"error": exc.__class__.__name__},
+        )
+        return None
     if completed.returncode != 0:
         raise AudioOperationFailedError
     try:
@@ -297,10 +308,18 @@ def probe_duration(source: Path, ffprobe_path: str) -> float | None:
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
         raise AudioToolUnavailableError from exc
     if completed.returncode != 0:
+        logger.warning(
+            "ffprobe could not read audio duration",
+            extra={
+                "returncode": completed.returncode,
+                "stderr_summary": summarize_stderr(completed.stderr),
+            },
+        )
         return None
     try:
         return float(completed.stdout.strip())
     except ValueError:
+        logger.warning("ffprobe returned invalid audio duration")
         return None
 
 
@@ -319,7 +338,7 @@ def run_ffmpeg(command: list[str]) -> None:
         raise AudioToolUnavailableError from exc
     if completed.returncode != 0:
         cleanup_command_output(command)
-        raise AudioOperationFailedError
+        raise AudioOperationFailedError(completed.returncode, completed.stderr)
 
 
 def ensure_copy_codec(command: list[str]) -> None:
@@ -340,7 +359,11 @@ def ensure_target_does_not_exist(target: Path) -> None:
 
 
 def build_temporary_path(directory: Path, final_name: str) -> Path:
-    return directory / f".yt-downloader-{token_hex(8)}-{final_name}.tmp"
+    final_path = Path(final_name)
+    temporary_name = (
+        f".yt-downloader-{token_hex(8)}-{final_path.stem}.tmp{final_path.suffix}"
+    )
+    return directory / temporary_name
 
 
 def publish_temporary_file(temporary: Path, target: Path) -> None:
@@ -366,3 +389,10 @@ def cleanup_path(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def summarize_stderr(stderr: str, limit: int = 500) -> str:
+    summary = re.sub(r"/[^\s'\"]+", "[path]", stderr).strip()
+    if len(summary) > limit:
+        return f"{summary[:limit]}..."
+    return summary
